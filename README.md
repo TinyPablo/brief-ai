@@ -54,7 +54,7 @@ python -c "import secrets; print(secrets.token_hex(32))"
 docker compose up -d --build
 ```
 
-The app is published on `127.0.0.1:8080`. The backend and database are not exposed
+The app is published on `127.0.0.1:8790`. The backend and database are not exposed
 to the host — only the frontend, which proxies API calls internally.
 
 ## Deploy
@@ -77,7 +77,7 @@ git pull && docker compose up -d --build
 ### Reverse proxy
 
 `Caddyfile` contains a snippet to paste into your host's global Caddy config. It
-reverse-proxies your site to `127.0.0.1:8080`. Set your own domain in place of the
+reverse-proxies your site to `127.0.0.1:8790`. Set your own domain in place of the
 placeholder, reload Caddy, and point your Cloudflare Tunnel at Caddy as usual.
 
 ## History & data

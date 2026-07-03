@@ -28,7 +28,7 @@ keeps you logged in across tabs so you rarely need to re-enter the PIN.
 Browser
   │
   ▼
-Cloudflare Tunnel ──► global Caddy (on the host) ──► frontend (nginx :8080)
+Cloudflare Tunnel ──► global Caddy (on the host) ──► frontend (nginx :8790)
                                                        │  static SPA (React + Tailwind, CDN)
                                                        │  proxies /api/* ──► backend (Flask :5000)
                                                        │                        │
@@ -41,14 +41,14 @@ Cloudflare Tunnel ──► global Caddy (on the host) ──► frontend (nginx
 - **frontend** — nginx serving a single-file React SPA (no build step; React,
   Tailwind, marked, DOMPurify, highlight.js all loaded from CDN). nginx also
   reverse-proxies `/api/*` to the backend, so the browser only ever talks to one
-  origin (cookies + CORS stay trivial). Published on `127.0.0.1:8080`.
+  origin (cookies + CORS stay trivial). Published on `127.0.0.1:8790`.
 - **backend** — Flask + gunicorn. Auth, rate limiting, Anthropic calls, history.
   Not published to the host; only reachable through the frontend proxy and the
   Docker network.
 - **db** — PostgreSQL, data persisted in a named Docker volume (`db_data`).
 
 The repo's `Caddyfile` is a snippet to paste into the host's **global** Caddy
-config; it just reverse-proxies the site to `127.0.0.1:8080`. The real domain is
+config; it just reverse-proxies the site to `127.0.0.1:8790`. The real domain is
 intentionally not committed.
 
 ## Auth & security
