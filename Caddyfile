@@ -1,0 +1,9 @@
+# Paste this block into your global Caddy config on the server and replace the
+# placeholder site address with your own domain. docker-compose publishes the
+# frontend container on 127.0.0.1:8080; nginx inside it serves the app and
+# proxies /api/* to the backend.
+
+your-domain.example {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8080
+}
