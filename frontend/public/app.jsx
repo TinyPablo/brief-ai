@@ -13,9 +13,9 @@ function fmtDuration(ms) {
   return (ms / 1000).toFixed(ms < 10000 ? 2 : 1) + ' s';
 }
 
-function fmtCost(usd) {
-  if (usd < 0.01) return '$' + usd.toFixed(4);
-  return '$' + usd.toFixed(3);
+function zl(value) {
+  const d = Math.abs(value) < 0.1 ? 4 : 2;
+  return value.toFixed(d) + ' zł';
 }
 
 function fmtTime(iso) {
@@ -28,28 +28,49 @@ function fmtTime(iso) {
   }
 }
 
+if (window.markedKatex) {
+  marked.use(window.markedKatex({ throwOnError: false, nonStandard: true, output: 'html' }));
+}
+marked.setOptions({ gfm: true, breaks: true });
+
+function addCopyButton(pre) {
+  if (pre.querySelector('.copy-btn')) return;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'copy-btn';
+  btn.textContent = 'Copy';
+  btn.addEventListener('click', () => {
+    const code = pre.querySelector('code');
+    const text = code ? code.innerText : pre.innerText;
+    navigator.clipboard.writeText(text).then(() => {
+      btn.textContent = 'Copied';
+      setTimeout(() => { btn.textContent = 'Copy'; }, 1200);
+    });
+  });
+  pre.appendChild(btn);
+}
+
 function Markdown({ text }) {
   const ref = useRef(null);
-  const html = useMemo(() => {
-    marked.setOptions({ gfm: true, breaks: true });
-    return DOMPurify.sanitize(marked.parse(text || ''));
-  }, [text]);
+  const html = useMemo(() => DOMPurify.sanitize(marked.parse(text || '')), [text]);
   useEffect(() => {
-    if (!ref.current) return;
-    ref.current.querySelectorAll('pre code').forEach((el) => {
+    const root = ref.current;
+    if (!root) return;
+    root.querySelectorAll('pre code').forEach((el) => {
       try { hljs.highlightElement(el); } catch (e) { /* noop */ }
     });
+    root.querySelectorAll('pre').forEach(addCopyButton);
   }, [html]);
   return <div ref={ref} className="md" dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
-function Meta({ result, onCopy, copied }) {
+function Meta({ result, rate, onCopy, copied }) {
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted border-b border-edge pb-3 mb-4">
       <span className="text-accent2 font-medium">{result.model_label}</span>
       <span>{fmtDuration(result.duration_ms)}</span>
       <span>{result.input_tokens.toLocaleString()} in / {result.output_tokens.toLocaleString()} out</span>
-      <span>{fmtCost(result.cost_usd)}</span>
+      <span>{zl(result.cost_usd * rate)}</span>
       {onCopy && (
         <button
           onClick={onCopy}
@@ -170,7 +191,18 @@ function Login({ onSuccess }) {
   );
 }
 
-function AskView({ models, model, setModel, onUnauth }) {
+function groupByProvider(models) {
+  const groups = [];
+  models.forEach((m) => {
+    let g = groups.find((x) => x.label === m.provider_label);
+    if (!g) { g = { label: m.provider_label, items: [] }; groups.push(g); }
+    g.items.push(m);
+  });
+  return groups;
+}
+
+function AskView({ models, model, setModel, rate, onUnauth }) {
+  const groups = useMemo(() => groupByProvider(models), [models]);
   const [prompt, setPrompt] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
@@ -211,6 +243,13 @@ function AskView({ models, model, setModel, onUnauth }) {
     }
   };
 
+  const clearAll = () => {
+    setPrompt('');
+    setResult(null);
+    setError('');
+    setCopied(false);
+  };
+
   const onKeyDown = (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault();
@@ -243,19 +282,32 @@ function AskView({ models, model, setModel, onUnauth }) {
             onChange={(e) => setModel(e.target.value)}
             className="bg-panel2 border border-edge rounded-lg text-sm px-2.5 py-1.5 outline-none hover:border-accent/50 transition cursor-pointer"
           >
-            {models.map((m) => (
-              <option key={m.id} value={m.id}>{m.label}</option>
+            {groups.map((g) => (
+              <optgroup key={g.label} label={g.label}>
+                {g.items.map((m) => (
+                  <option key={m.id} value={m.id}>{m.label} · ~{zl(m.est_pln)}</option>
+                ))}
+              </optgroup>
             ))}
           </select>
 
-          <button
-            onClick={send}
-            disabled={loading || !prompt.trim()}
-            className="flex items-center gap-2 bg-accent hover:bg-accent2 disabled:opacity-40 disabled:hover:bg-accent text-white text-sm font-medium px-4 py-1.5 rounded-lg transition-colors"
-          >
-            {loading ? <span className="spinner" /> : null}
-            {loading ? 'Thinking' : 'Send'}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={clearAll}
+              disabled={loading || (!prompt && !result && !error)}
+              className="text-sm text-muted hover:text-white disabled:opacity-40 px-3 py-1.5 rounded-lg transition-colors"
+            >
+              Clear
+            </button>
+            <button
+              onClick={send}
+              disabled={loading || !prompt.trim()}
+              className="flex items-center gap-2 bg-accent hover:bg-accent2 disabled:opacity-40 disabled:hover:bg-accent text-white text-sm font-medium px-4 py-1.5 rounded-lg transition-colors"
+            >
+              {loading ? <span className="spinner" /> : null}
+              {loading ? 'Thinking' : 'Send'}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -279,7 +331,7 @@ function AskView({ models, model, setModel, onUnauth }) {
 
       {result && (
         <div className="bg-panel border border-edge rounded-2xl p-5 fade-in">
-          <Meta result={result} onCopy={copy} copied={copied} />
+          <Meta result={result} rate={rate} onCopy={copy} copied={copied} />
           <Markdown text={result.answer} />
         </div>
       )}
@@ -287,7 +339,7 @@ function AskView({ models, model, setModel, onUnauth }) {
   );
 }
 
-function HistoryView({ onUnauth }) {
+function HistoryView({ rate, onUnauth }) {
   const [items, setItems] = useState(null);
   const [detail, setDetail] = useState(null);
 
@@ -330,7 +382,7 @@ function HistoryView({ onUnauth }) {
           <div className="flex items-center gap-3 text-xs text-muted mb-1.5">
             <span className="text-accent2 font-medium">{it.model_label}</span>
             <span>{fmtTime(it.created_at)}</span>
-            <span className="ml-auto">{fmtCost(it.cost_usd)}</span>
+            <span className="ml-auto">{zl(it.cost_usd * rate)}</span>
             <span>{fmtDuration(it.duration_ms)}</span>
           </div>
           <div className="text-sm text-[#dcdce2] line-clamp-2">{it.prompt_preview}</div>
@@ -360,7 +412,7 @@ function HistoryView({ onUnauth }) {
               {detail.prompt}
             </div>
             <div className="text-xs uppercase tracking-wide text-muted mb-2">Answer</div>
-            <Meta result={detail} />
+            <Meta result={detail} rate={rate} />
             <Markdown text={detail.answer} />
           </div>
         </div>
@@ -373,12 +425,14 @@ function Main({ onLogout }) {
   const [tab, setTab] = useState('ask');
   const [models, setModels] = useState([]);
   const [model, setModel] = useState('');
+  const [rate, setRate] = useState(1);
 
   useEffect(() => {
     api('/config').then((r) => (r.ok ? r.json() : null)).then((d) => {
       if (!d) return;
       setModels(d.models);
       setModel(d.default);
+      setRate(d.usd_pln || 1);
     });
   }, []);
 
@@ -423,9 +477,9 @@ function Main({ onLogout }) {
 
       <main className="max-w-2xl mx-auto px-5 py-6">
         {tab === 'ask' && models.length > 0 && (
-          <AskView models={models} model={model} setModel={setModel} onUnauth={unauth} />
+          <AskView models={models} model={model} setModel={setModel} rate={rate} onUnauth={unauth} />
         )}
-        {tab === 'history' && <HistoryView onUnauth={unauth} />}
+        {tab === 'history' && <HistoryView rate={rate} onUnauth={unauth} />}
       </main>
     </div>
   );

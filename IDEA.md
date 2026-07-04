@@ -85,7 +85,7 @@ intentionally not committed.
 - `POST /api/login` `{pin}` → `{ok}` / `401` / `429 {retry_after}`
 - `GET  /api/session` → `{authenticated}`
 - `POST /api/logout` → `{ok}`
-- `GET  /api/config` → `{models:[{id,label}], default}`  *(auth)*
+- `GET  /api/config` → `{models:[{id,label,provider,provider_label,est_pln}], default, usd_pln}` *(auth)*
 - `POST /api/generate` `{model, prompt}` → answer + tokens + cost + duration *(auth)*
 - `GET  /api/history` → last 100 rows (preview) *(auth)*
 - `GET  /api/history/:id` → full row *(auth)*
@@ -93,36 +93,51 @@ intentionally not committed.
 
 ## Models & pricing
 
-Pricing is USD per 1M tokens (input / output). `effort` marks models that accept
-`output_config.effort` (used at `low` to keep answers snappy — Haiku does not
-support it).
+Two providers, selected per model via a `provider` field. Pricing is USD per 1M
+tokens (input / output). `effort` (Anthropic only) marks models that accept
+`output_config.effort`, used at `medium` (balanced speed vs. thoroughness).
 
-| id                 | label      | input | output | effort |
-|--------------------|------------|-------|--------|--------|
-| claude-haiku-4-5   | Haiku 4.5  | 1     | 5      | no     |
-| claude-sonnet-4-6  | Sonnet 4.6 | 3     | 15     | yes    |
-| claude-opus-4-8    | Opus 4.8   | 5     | 25     | yes    |
-| claude-fable-5     | Fable 5    | 10    | 50     | yes    |
+| id                     | label               | provider | input | output | effort |
+|------------------------|---------------------|----------|-------|--------|--------|
+| gemini-2.5-flash-lite  | Gemini 2.5 Flash Lite | google   | 0.10  | 0.40   | —      |
+| gemini-3.1-flash-lite  | Gemini 3.1 Flash Lite | google   | 0.25  | 1.50   | —      |
+| gemini-3.5-flash       | Gemini 3.5 Flash    | google   | 1.50  | 9.00   | —      |
+| gemini-3.1-pro-preview | Gemini 3.1 Pro      | google   | 2.00  | 12.00  | —      |
+| claude-haiku-4-5       | Haiku 4.5           | anthropic| 1     | 5      | no     |
+| claude-sonnet-4-6      | Sonnet 4.6          | anthropic| 3     | 15     | yes    |
+| claude-opus-4-8        | Opus 4.8            | anthropic| 5     | 25     | yes    |
+| claude-fable-5         | Fable 5             | anthropic| 10    | 50     | yes    |
 
 Notes:
-- Default model is **Sonnet 4.6**.
+- Default model is **`gemini-3.1-flash-lite`**.
+- The UI groups the model dropdown by provider (Anthropic / Google Gemini) and
+  shows a per-prompt price estimate next to each model.
+- **Price display is in PLN.** Cost is computed in USD from real token counts, then
+  the frontend multiplies by `USD_TO_PLN` (constant in `backend/app.py`, currently
+  `4.0`) for display. The DB stores `cost_usd` (USD stays the source of truth).
+- The dropdown estimate assumes a typical prompt of `ESTIMATE_INPUT_TOKENS` (1000)
+  + `ESTIMATE_OUTPUT_TOKENS` (1500) tokens; `/api/config` returns the pre-computed
+  `est_pln` per model plus the `usd_pln` rate.
 - Fable 5 always thinks and can be slow; it is called through the beta endpoint
   with a server-side fallback to Opus 4.8 on a policy refusal. The served model
   (which may be the fallback) is what gets priced and stored.
-- Refusals (`stop_reason == "refusal"`) are surfaced as a short note.
+- Anthropic refusals (`stop_reason == "refusal"`) and empty/blocked Gemini
+  responses are surfaced as a short note.
 
-## Adding more providers (future)
+## Adding more providers
 
-The plan is to add OpenAI (GPT) and Gemini models. The clean seam:
+The provider seam already exists (Anthropic + Google Gemini). `MODELS[id]` has a
+`provider` field; `/api/generate` routes to `call_anthropic` or `call_gemini`, each
+returning a normalized dict `{answer, input_tokens, output_tokens, stop_reason,
+served}`. To add another provider (e.g. OpenAI):
 
-1. Add a provider abstraction in the backend — a function per provider that takes
-   `(model, prompt)` and returns a normalized result
-   `{answer, input_tokens, output_tokens, stop_reason}`.
-2. Extend `MODELS` with a `provider` field and per-provider pricing; route
-   `/api/generate` on that field.
-3. Add the new API keys to `.env.example` (the user fills them in).
-4. The frontend already renders whatever `/api/config` returns — no change needed
-   beyond labels.
+1. Add a `call_<provider>` helper returning that same dict shape.
+2. Add its models to `MODELS` (with `provider`, pricing) and `MODEL_ORDER`, plus a
+   `PROVIDER_LABELS` entry.
+3. Route to the new helper in `generate()`.
+4. Add its API key to `.env.example`, `docker-compose.yml`, and requirements.
+5. The frontend groups the dropdown from `provider_label` automatically — no change
+   needed beyond what `/api/config` returns.
 
 Keep the DB schema as-is; `model` already stores the served model id.
 

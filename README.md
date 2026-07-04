@@ -14,9 +14,11 @@ session, so you log in once and stay in across tabs.
 - Dark, lightweight single-page interface.
 - 6-digit PIN login with a persistent session cookie.
 - Brute-force protection: 3-second server-side cooldown per login attempt.
-- Model picker: **Haiku 4.5**, **Sonnet 4.6**, **Opus 4.8**, **Fable 5**.
-- Rendered Markdown answers with syntax-highlighted code.
-- Shows generation time, input/output tokens, and price per prompt.
+- Model picker grouped by provider — **Anthropic** (Haiku 4.5, Sonnet 4.6, Opus 4.8, Fable 5)
+  and **Google Gemini** (2.5 Flash Lite, 3.1 Flash Lite, 3.5 Flash, 3.1 Pro), each showing a
+  per-prompt price estimate.
+- Rendered Markdown answers with LaTeX math, syntax-highlighted code, and per-block copy buttons.
+- Shows generation time, input/output tokens, and price (in PLN) per prompt.
 - Prompt history stored in PostgreSQL and browsable in-app.
 
 ## Stack
@@ -37,6 +39,7 @@ Then edit `.env`:
 | Variable            | What it is                                                       |
 |---------------------|-----------------------------------------------------------------|
 | `ANTHROPIC_API_KEY` | Your Anthropic API key.                                         |
+| `GEMINI_API_KEY`    | Your Google AI Studio API key.                                 |
 | `APP_PIN`           | The 6-digit login PIN.                                          |
 | `SECRET_KEY`        | Long random string for signing session cookies.                |
 | `COOKIE_SECURE`     | `true` in production (https); `false` only for local http tests.|
@@ -95,4 +98,6 @@ docker volume rm brief-ai_db_data
 - Fable 5 always reasons and can take longer than the other models. It runs with a
   server-side fallback to Opus 4.8 if a request is refused; the served model is the
   one shown and priced.
-- Prices are computed from published per-model rates and are estimates.
+- Prices are computed from published per-model rates and shown in PLN at a fixed USD→PLN
+  rate. The per-model estimate in the dropdown assumes a typical prompt of ~1000 input +
+  ~1500 output tokens. Both the rate and the assumption are constants in `backend/app.py`.

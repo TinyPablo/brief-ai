@@ -11,6 +11,8 @@ import psycopg2
 import psycopg2.extras
 from anthropic import Anthropic
 from flask import Flask, jsonify, request, session
+from google import genai
+from google.genai import types as genai_types
 
 APP_PIN = os.environ.get("APP_PIN", "")
 if not re.fullmatch(r"\d{6}", APP_PIN):
@@ -25,7 +27,10 @@ if not SECRET_KEY:
 DATABASE_URL = os.environ["DATABASE_URL"]
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "true").lower() == "true"
 
-client = Anthropic()  # reads ANTHROPIC_API_KEY from the environment
+anthropic_client = Anthropic()  # reads ANTHROPIC_API_KEY from the environment
+
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 SYSTEM_PROMPT = (
     "You are Brief AI. Answer the user clearly and directly. "
@@ -33,17 +38,38 @@ SYSTEM_PROMPT = (
     "Be concise: no preamble, no filler, just the answer."
 )
 
+# provider: "anthropic" | "google"; input/output priced in USD per 1M tokens;
+# effort applies only to Anthropic models that accept output_config.effort.
 MODELS = {
-    "claude-haiku-4-5": {"label": "Haiku 4.5", "input": 1.0, "output": 5.0, "effort": False},
-    "claude-sonnet-4-6": {"label": "Sonnet 4.6", "input": 3.0, "output": 15.0, "effort": True},
-    "claude-opus-4-8": {"label": "Opus 4.8", "input": 5.0, "output": 25.0, "effort": True},
-    "claude-fable-5": {"label": "Fable 5", "input": 10.0, "output": 50.0, "effort": True},
+    "gemini-2.5-flash-lite": {"label": "Gemini 2.5 Flash Lite", "provider": "google", "input": 0.10, "output": 0.40},
+    "gemini-3.1-flash-lite": {"label": "Gemini 3.1 Flash Lite", "provider": "google", "input": 0.25, "output": 1.50},
+    "gemini-3.5-flash": {"label": "Gemini 3.5 Flash", "provider": "google", "input": 1.50, "output": 9.00},
+    "gemini-3.1-pro-preview": {"label": "Gemini 3.1 Pro", "provider": "google", "input": 2.00, "output": 12.00},
+    "claude-haiku-4-5": {"label": "Haiku 4.5", "provider": "anthropic", "input": 1.0, "output": 5.0, "effort": False},
+    "claude-sonnet-4-6": {"label": "Sonnet 4.6", "provider": "anthropic", "input": 3.0, "output": 15.0, "effort": True},
+    "claude-opus-4-8": {"label": "Opus 4.8", "provider": "anthropic", "input": 5.0, "output": 25.0, "effort": True},
+    "claude-fable-5": {"label": "Fable 5", "provider": "anthropic", "input": 10.0, "output": 50.0, "effort": True},
 }
-MODEL_ORDER = ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-8", "claude-fable-5"]
-DEFAULT_MODEL = "claude-sonnet-4-6"
+MODEL_ORDER = [
+    "gemini-2.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-3.1-pro-preview",
+    "claude-haiku-4-5",
+    "claude-sonnet-4-6",
+    "claude-opus-4-8",
+    "claude-fable-5",
+]
+PROVIDER_LABELS = {"anthropic": "Anthropic", "google": "Google Gemini"}
+DEFAULT_MODEL = "gemini-3.1-flash-lite"
 
 MAX_TOKENS = 4096
 LOGIN_COOLDOWN = 3.0
+
+# Per-prompt price estimate assumptions, converted to PLN with a fixed rate.
+ESTIMATE_INPUT_TOKENS = 1000
+ESTIMATE_OUTPUT_TOKENS = 1500
+USD_TO_PLN = 4.0
 
 CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS prompts (
@@ -96,6 +122,14 @@ def init_db():
         conn.close()
 
 
+def estimate_pln(cfg):
+    usd = (
+        ESTIMATE_INPUT_TOKENS / 1_000_000 * cfg["input"]
+        + ESTIMATE_OUTPUT_TOKENS / 1_000_000 * cfg["output"]
+    )
+    return round(usd * USD_TO_PLN, 4)
+
+
 def client_ip():
     forwarded = request.headers.get("X-Forwarded-For", "")
     if forwarded:
@@ -110,6 +144,86 @@ def require_auth(view):
             return jsonify(error="unauthorized"), 401
         return view(*args, **kwargs)
     return wrapper
+
+
+def call_anthropic(model, prompt):
+    cfg = MODELS[model]
+    kwargs = dict(
+        model=model,
+        max_tokens=MAX_TOKENS,
+        system=SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    if cfg.get("effort"):
+        kwargs["output_config"] = {"effort": "medium"}
+
+    if model == "claude-fable-5":
+        try:
+            resp = anthropic_client.beta.messages.create(
+                betas=["server-side-fallback-2026-06-01"],
+                fallbacks=[{"model": "claude-opus-4-8"}],
+                **kwargs,
+            )
+        except TypeError:
+            resp = anthropic_client.messages.create(**kwargs)
+    else:
+        resp = anthropic_client.messages.create(**kwargs)
+
+    if resp.stop_reason == "refusal":
+        answer = "_The model declined to answer this request._"
+    else:
+        answer = "".join(
+            block.text for block in resp.content
+            if getattr(block, "type", None) == "text"
+        ).strip() or "_No response._"
+
+    return {
+        "answer": answer,
+        "input_tokens": resp.usage.input_tokens,
+        "output_tokens": resp.usage.output_tokens,
+        "stop_reason": resp.stop_reason,
+        "served": getattr(resp, "model", model),
+    }
+
+
+def call_gemini(model, prompt):
+    if gemini_client is None:
+        raise RuntimeError("GEMINI_API_KEY is not configured")
+
+    resp = gemini_client.models.generate_content(
+        model=model,
+        contents=prompt,
+        config=genai_types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
+            max_output_tokens=MAX_TOKENS,
+        ),
+    )
+
+    try:
+        answer = (resp.text or "").strip()
+    except Exception:
+        answer = ""
+    if not answer:
+        answer = "_The model returned no content._"
+
+    usage = resp.usage_metadata
+    in_tok = getattr(usage, "prompt_token_count", 0) or 0
+    out_tok = (getattr(usage, "candidates_token_count", 0) or 0) + \
+              (getattr(usage, "thoughts_token_count", 0) or 0)
+
+    stop_reason = None
+    try:
+        stop_reason = str(resp.candidates[0].finish_reason)
+    except Exception:
+        pass
+
+    return {
+        "answer": answer,
+        "input_tokens": in_tok,
+        "output_tokens": out_tok,
+        "stop_reason": stop_reason,
+        "served": model,
+    }
 
 
 @app.get("/api/health")
@@ -150,10 +264,17 @@ def logout():
 @app.get("/api/config")
 @require_auth
 def config():
-    return jsonify(
-        models=[{"id": m, "label": MODELS[m]["label"]} for m in MODEL_ORDER],
-        default=DEFAULT_MODEL,
-    )
+    models = []
+    for model_id in MODEL_ORDER:
+        cfg = MODELS[model_id]
+        models.append({
+            "id": model_id,
+            "label": cfg["label"],
+            "provider": cfg["provider"],
+            "provider_label": PROVIDER_LABELS[cfg["provider"]],
+            "est_pln": estimate_pln(cfg),
+        })
+    return jsonify(models=models, default=DEFAULT_MODEL, usd_pln=USD_TO_PLN)
 
 
 @app.post("/api/generate")
@@ -167,45 +288,21 @@ def generate():
     if not prompt:
         return jsonify(error="empty_prompt"), 400
 
-    cfg = MODELS[model]
-    kwargs = dict(
-        model=model,
-        max_tokens=MAX_TOKENS,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    if cfg["effort"]:
-        kwargs["output_config"] = {"effort": "low"}
-
+    provider = MODELS[model]["provider"]
     start = time.perf_counter()
     try:
-        if model == "claude-fable-5":
-            try:
-                resp = client.beta.messages.create(
-                    betas=["server-side-fallback-2026-06-01"],
-                    fallbacks=[{"model": "claude-opus-4-8"}],
-                    **kwargs,
-                )
-            except TypeError:
-                resp = client.messages.create(**kwargs)
+        if provider == "google":
+            result = call_gemini(model, prompt)
         else:
-            resp = client.messages.create(**kwargs)
+            result = call_anthropic(model, prompt)
     except Exception as exc:  # surface API/network errors to the client
         return jsonify(error="api_error", detail=str(exc)), 502
     duration_ms = int((time.perf_counter() - start) * 1000)
 
-    if resp.stop_reason == "refusal":
-        answer = "_The model declined to answer this request._"
-    else:
-        answer = "".join(
-            block.text for block in resp.content
-            if getattr(block, "type", None) == "text"
-        ).strip() or "_No response._"
-
-    in_tok = resp.usage.input_tokens
-    out_tok = resp.usage.output_tokens
-    served = getattr(resp, "model", model)
-    price = MODELS.get(served, cfg)
+    served = result["served"]
+    price = MODELS.get(served, MODELS[model])
+    in_tok = result["input_tokens"]
+    out_tok = result["output_tokens"]
     cost = in_tok / 1_000_000 * price["input"] + out_tok / 1_000_000 * price["output"]
 
     with get_db() as conn, conn.cursor() as cur:
@@ -214,7 +311,7 @@ def generate():
                (model, prompt, answer, input_tokens, output_tokens, cost_usd, duration_ms, stop_reason)
                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                RETURNING id, created_at""",
-            (served, prompt, answer, in_tok, out_tok, cost, duration_ms, resp.stop_reason),
+            (served, prompt, result["answer"], in_tok, out_tok, cost, duration_ms, result["stop_reason"]),
         )
         row = cur.fetchone()
     conn.close()
@@ -224,12 +321,12 @@ def generate():
         created_at=row[1].isoformat(),
         model=served,
         model_label=MODELS.get(served, {}).get("label", served),
-        answer=answer,
+        answer=result["answer"],
         input_tokens=in_tok,
         output_tokens=out_tok,
         cost_usd=cost,
         duration_ms=duration_ms,
-        stop_reason=resp.stop_reason,
+        stop_reason=result["stop_reason"],
     )
 
 
