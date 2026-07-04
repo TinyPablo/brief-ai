@@ -15,7 +15,7 @@ function fmtDuration(ms) {
 
 function zl(value) {
   const d = Math.abs(value) < 0.1 ? 4 : 2;
-  return value.toFixed(d) + ' zł';
+  return parseFloat(value.toFixed(d)) + ' zł';
 }
 
 function fmtTime(iso) {
@@ -218,8 +218,8 @@ function AskView({ models, model, setModel, rate, onUnauth }) {
     return () => clearInterval(t);
   }, [loading]);
 
-  const send = async () => {
-    if (!prompt.trim() || loading) return;
+  const doSend = async (text) => {
+    if (!text.trim() || loading) return;
     setLoading(true);
     setResult(null);
     setError('');
@@ -227,7 +227,7 @@ function AskView({ models, model, setModel, rate, onUnauth }) {
     try {
       const res = await api('/generate', {
         method: 'POST',
-        body: JSON.stringify({ model, prompt }),
+        body: JSON.stringify({ model, prompt: text }),
       });
       if (res.status === 401) { onUnauth(); return; }
       const data = await res.json().catch(() => ({}));
@@ -242,6 +242,9 @@ function AskView({ models, model, setModel, rate, onUnauth }) {
       setLoading(false);
     }
   };
+
+  const send = () => doSend(prompt);
+  const sendBrief = () => doSend('very brief: ' + prompt);
 
   const clearAll = () => {
     setPrompt('');
@@ -298,6 +301,14 @@ function AskView({ models, model, setModel, rate, onUnauth }) {
               className="text-sm text-muted hover:text-white disabled:opacity-40 px-3 py-1.5 rounded-lg transition-colors"
             >
               Clear
+            </button>
+            <button
+              onClick={sendBrief}
+              disabled={loading || !prompt.trim()}
+              title="Ask for a very brief answer"
+              className="text-sm font-medium text-accent2 border border-accent/60 hover:bg-accent/10 disabled:opacity-40 disabled:hover:bg-transparent px-3 py-1.5 rounded-lg transition-colors"
+            >
+              Brief
             </button>
             <button
               onClick={send}
