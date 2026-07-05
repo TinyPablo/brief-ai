@@ -372,7 +372,7 @@ function AskView({ models, model, setModel, effort, setEffort, thinking, setThin
           className="w-full bg-transparent resize-y outline-none px-3.5 pt-3 pb-1 text-[0.95rem] placeholder:text-muted/70 min-h-[4.5rem]"
         />
 
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 pt-1">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2.5">
           <select
             value={model}
             onChange={(e) => setModel(e.target.value)}
@@ -414,15 +414,10 @@ function AskView({ models, model, setModel, effort, setEffort, thinking, setThin
               onChange={(v) => setThinking(v ? 'on' : 'off')}
             />
           </div>
-        </div>
-
-        <div className="flex items-center justify-between gap-2 px-3 py-2.5">
-          <span className="text-xs text-muted/70 truncate">
-            {estimate != null
-              ? 'est. ~' + zl(estimate)
-              : (navigator.platform.includes('Mac') ? '⌘ + ↵ to send' : 'Ctrl + ↵ to send')}
-          </span>
-          <div className="flex items-center gap-2">
+          <div className="ml-auto flex items-center gap-2">
+            {estimate != null && (
+              <span className="text-xs text-muted/70 whitespace-nowrap">est. ~{zl(estimate)}</span>
+            )}
             <button
               onClick={clearAll}
               disabled={loading || (!prompt && !result && !error)}
