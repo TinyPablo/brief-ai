@@ -291,6 +291,7 @@ function AskView({ models, model, setModel, effort, setEffort, thinking, setThin
   const [error, setError] = useState('');
   const [elapsed, setElapsed] = useState(0);
   const [copied, setCopied] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
     if (!loading) return;
@@ -336,7 +337,6 @@ function AskView({ models, model, setModel, effort, setEffort, thinking, setThin
   };
 
   const send = () => doSend(false);
-  const sendBrief = () => doSend(true);
 
   const clearAll = () => {
     setPrompt('');
@@ -381,7 +381,7 @@ function AskView({ models, model, setModel, effort, setEffort, thinking, setThin
             {groups.map((g) => (
               <optgroup key={g.label} label={g.label}>
                 {g.items.map((m) => (
-                  <option key={m.id} value={m.id}>{m.label} · ~{zl(m.est_pln)}</option>
+                  <option key={m.id} value={m.id}>{m.label}</option>
                 ))}
               </optgroup>
             ))}
@@ -426,26 +426,60 @@ function AskView({ models, model, setModel, effort, setEffort, thinking, setThin
             <button
               onClick={clearAll}
               disabled={loading || (!prompt && !result && !error)}
-              className="text-sm text-muted hover:text-white disabled:opacity-40 px-3 py-1.5 rounded-lg transition-colors"
+              title="Clear"
+              className="text-muted hover:text-white disabled:opacity-40 p-1.5 rounded-lg transition-colors"
             >
-              Clear
+              <svg
+                className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+              >
+                <polyline points="3 6 5 6 21 6" />
+                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                <path d="M10 11v6M14 11v6" />
+                <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+              </svg>
             </button>
-            <button
-              onClick={sendBrief}
-              disabled={loading || !prompt.trim()}
-              title="Ask for a very brief answer"
-              className="text-sm font-medium text-accent2 border border-accent/60 hover:bg-accent/10 disabled:opacity-40 disabled:hover:bg-transparent px-3 py-1.5 rounded-lg transition-colors"
-            >
-              Brief
-            </button>
-            <button
-              onClick={send}
-              disabled={loading || !prompt.trim()}
-              className="flex items-center gap-2 bg-accent hover:bg-accent2 disabled:opacity-40 disabled:hover:bg-accent text-white text-sm font-medium px-4 py-1.5 rounded-lg transition-colors"
-            >
-              {loading ? <span className="spinner" /> : null}
-              {loading ? 'Thinking' : 'Send'}
-            </button>
+
+            <div className="relative inline-flex">
+              <button
+                onClick={() => doSend(true)}
+                disabled={loading || !prompt.trim()}
+                className="flex items-center gap-2 bg-accent hover:bg-accent2 disabled:opacity-40 disabled:hover:bg-accent text-white text-sm font-medium pl-4 pr-3 py-1.5 rounded-l-lg transition-colors"
+              >
+                {loading ? <span className="spinner" /> : null}
+                {loading ? 'Thinking' : 'Brief'}
+              </button>
+              <button
+                onClick={() => setMenuOpen((o) => !o)}
+                disabled={loading || !prompt.trim()}
+                title="More send options"
+                className="bg-accent hover:bg-accent2 disabled:opacity-40 disabled:hover:bg-accent text-white px-2 py-1.5 rounded-r-lg border-l border-white/20 transition-colors"
+              >
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </button>
+
+              {menuOpen && (
+                <>
+                  <div className="fixed inset-0 z-20" onClick={() => setMenuOpen(false)} />
+                  <div className="absolute bottom-full right-0 mb-1 w-36 bg-panel2 border border-edge rounded-lg overflow-hidden shadow-lg z-30">
+                    <button
+                      onClick={() => { setMenuOpen(false); doSend(true); }}
+                      className="w-full text-left text-sm px-3 py-2 hover:bg-white/5 transition-colors"
+                    >
+                      Brief
+                    </button>
+                    <button
+                      onClick={() => { setMenuOpen(false); doSend(false); }}
+                      className="w-full text-left text-sm px-3 py-2 hover:bg-white/5 transition-colors"
+                    >
+                      Send
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
       </div>
