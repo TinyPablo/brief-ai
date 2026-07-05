@@ -122,6 +122,11 @@ function Meta({ result, rate, onCopy, copied }) {
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted border-b border-edge pb-3 mb-4">
       <span className="text-accent2 font-medium">{result.model_label}</span>
+      {result.reasoning && (
+        <span className="uppercase text-[10px] tracking-wide border border-edge rounded px-1.5 py-0.5">
+          {result.reasoning}
+        </span>
+      )}
       <span>{fmtDuration(result.duration_ms)}</span>
       <span>{result.input_tokens.toLocaleString()} in / {result.output_tokens.toLocaleString()} out</span>
       <span>{zl(result.cost_usd * rate)}</span>
@@ -432,22 +437,128 @@ function AskView({ models, model, setModel, reasoning, setReasoning, reasoningLe
   );
 }
 
+const HISTORY_PAGE = 30;
+
+function startOfWeek(d) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
+  return x;
+}
+
+function dayKey(d) {
+  return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
+}
+
+function weekKey(d) {
+  const s = startOfWeek(d);
+  return 'w' + s.getFullYear() + '-' + (s.getMonth() + 1) + '-' + s.getDate();
+}
+
+function dayLabel(d) {
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+  if (dayKey(d) === dayKey(today)) return 'Today';
+  if (dayKey(d) === dayKey(yesterday)) return 'Yesterday';
+  return d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+function weekLabel(d) {
+  if (weekKey(d) === weekKey(new Date())) return 'This week';
+  const s = startOfWeek(d);
+  const e = new Date(s);
+  e.setDate(s.getDate() + 6);
+  return s.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+    + ' – ' + e.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+function groupHistory(items) {
+  const weeks = [];
+  const wmap = {};
+  items.forEach((it) => {
+    const d = new Date(it.created_at);
+    const wk = weekKey(d);
+    let w = wmap[wk];
+    if (!w) { w = { key: wk, label: weekLabel(d), days: [], dmap: {} }; wmap[wk] = w; weeks.push(w); }
+    const dk = dayKey(d);
+    let day = w.dmap[dk];
+    if (!day) { day = { key: dk, label: dayLabel(d), items: [] }; w.dmap[dk] = day; w.days.push(day); }
+    day.items.push(it);
+  });
+  return weeks;
+}
+
 function HistoryView({ rate, onUnauth }) {
-  const [items, setItems] = useState(null);
+  const [items, setItems] = useState([]);
+  const [q, setQ] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const [loaded, setLoaded] = useState(false);
+  const [openState, setOpenState] = useState({});
   const [detail, setDetail] = useState(null);
 
-  const load = useCallback(async () => {
+  const itemsRef = useRef([]);
+  const loadingRef = useRef(false);
+  const sentinelRef = useRef(null);
+  useEffect(() => { itemsRef.current = items; }, [items]);
+
+  const curWeek = weekKey(new Date());
+  const curDay = dayKey(new Date());
+
+  const fetchPage = useCallback(async (reset) => {
+    if (loadingRef.current) return;
+    loadingRef.current = true;
+    setLoading(true);
+    const params = new URLSearchParams();
+    if (q.trim()) params.set('q', q.trim());
+    if (!reset && itemsRef.current.length) {
+      params.set('before', itemsRef.current[itemsRef.current.length - 1].id);
+    }
     try {
-      const res = await api('/history');
+      const res = await api('/history?' + params.toString());
       if (res.status === 401) { onUnauth(); return; }
       const data = await res.json();
-      setItems(data.items || []);
+      const batch = data.items || [];
+      setItems((prev) => (reset ? batch : [...prev, ...batch]));
+      setHasMore(batch.length >= HISTORY_PAGE);
     } catch (e) {
-      setItems([]);
+      setHasMore(false);
+    } finally {
+      loadingRef.current = false;
+      setLoading(false);
+      setLoaded(true);
     }
-  }, [onUnauth]);
+  }, [q, onUnauth]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setItems([]);
+      itemsRef.current = [];
+      setHasMore(true);
+      setLoaded(false);
+      fetchPage(true);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [q, fetchPage]);
+
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const ob = new IntersectionObserver((entries) => {
+      if (entries[0].isIntersecting && hasMore && !loadingRef.current && itemsRef.current.length > 0) {
+        fetchPage(false);
+      }
+    }, { rootMargin: '250px' });
+    ob.observe(el);
+    return () => ob.disconnect();
+  }, [hasMore, fetchPage]);
+
+  const isOpen = (key, type) => {
+    if (openState[key] !== undefined) return openState[key];
+    return type === 'week' ? key === curWeek : key === curDay;
+  };
+  const toggle = (key, type) => setOpenState((s) => ({ ...s, [key]: !isOpen(key, type) }));
 
   const open = async (id) => {
     try {
@@ -457,30 +568,97 @@ function HistoryView({ rate, onUnauth }) {
     } catch (e) { /* noop */ }
   };
 
-  if (items === null) {
-    return <div className="text-muted text-sm px-1">Loading…</div>;
-  }
-  if (items.length === 0) {
-    return <div className="text-muted text-sm px-1">No prompts yet.</div>;
-  }
+  const del = async (id, e) => {
+    e.stopPropagation();
+    if (!window.confirm('Delete this conversation?')) return;
+    try {
+      const res = await api('/history/' + id, { method: 'DELETE' });
+      if (res.status === 401) { onUnauth(); return; }
+      if (res.ok) {
+        setItems((prev) => prev.filter((x) => x.id !== id));
+        if (detail && detail.id === id) setDetail(null);
+      }
+    } catch (e2) { /* noop */ }
+  };
+
+  const groups = useMemo(() => groupHistory(items), [items]);
 
   return (
-    <div className="space-y-2">
-      {items.map((it) => (
-        <button
-          key={it.id}
-          onClick={() => open(it.id)}
-          className="w-full text-left bg-panel border border-edge hover:border-accent/50 rounded-xl px-4 py-3 transition-colors"
-        >
-          <div className="flex items-center gap-3 text-xs text-muted mb-1.5">
-            <span className="text-accent2 font-medium">{it.model_label}</span>
-            <span>{fmtTime(it.created_at)}</span>
-            <span className="ml-auto">{zl(it.cost_usd * rate)}</span>
-            <span>{fmtDuration(it.duration_ms)}</span>
+    <div className="space-y-3">
+      <input
+        type="text"
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        placeholder="Search prompts and answers…"
+        className="w-full bg-panel border border-edge rounded-xl text-sm px-4 py-2.5 outline-none focus:border-accent/60 transition-colors"
+      />
+
+      {loaded && items.length === 0 && (
+        <div className="text-muted text-sm px-1">{q.trim() ? 'No matches.' : 'No prompts yet.'}</div>
+      )}
+
+      {groups.map((w) => {
+        const wOpen = isOpen(w.key, 'week');
+        return (
+          <div key={w.key} className="space-y-2">
+            <button
+              onClick={() => toggle(w.key, 'week')}
+              className="w-full flex items-center gap-2 text-left text-sm font-semibold text-white/90 py-1"
+            >
+              <span className="text-muted text-xs w-3">{wOpen ? '▾' : '▸'}</span>
+              {w.label}
+            </button>
+
+            {wOpen && w.days.map((day) => {
+              const dOpen = isOpen(day.key, 'day');
+              return (
+                <div key={day.key} className="pl-4 space-y-1.5">
+                  <button
+                    onClick={() => toggle(day.key, 'day')}
+                    className="w-full flex items-center gap-2 text-left text-xs font-medium text-muted py-0.5"
+                  >
+                    <span className="w-3">{dOpen ? '▾' : '▸'}</span>
+                    {day.label}
+                    <span className="text-muted/60">· {day.items.length}</span>
+                  </button>
+
+                  {dOpen && day.items.map((it) => (
+                    <div
+                      key={it.id}
+                      className="group flex items-start gap-2 bg-panel border border-edge hover:border-accent/50 rounded-xl px-4 py-3 transition-colors"
+                    >
+                      <button onClick={() => open(it.id)} className="flex-1 min-w-0 text-left">
+                        <div className="flex items-center gap-3 text-xs text-muted mb-1.5">
+                          <span className="text-accent2 font-medium">{it.model_label}</span>
+                          {it.reasoning && (
+                            <span className="uppercase text-[10px] tracking-wide border border-edge rounded px-1.5 py-0.5">
+                              {it.reasoning}
+                            </span>
+                          )}
+                          <span>{fmtTime(it.created_at)}</span>
+                          <span className="ml-auto">{zl(it.cost_usd * rate)}</span>
+                          <span>{fmtDuration(it.duration_ms)}</span>
+                        </div>
+                        <div className="text-sm text-[#dcdce2] line-clamp-2">{it.prompt_preview}</div>
+                      </button>
+                      <button
+                        onClick={(e) => del(it.id, e)}
+                        title="Delete"
+                        className="shrink-0 text-muted hover:text-red-400 text-sm opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
           </div>
-          <div className="text-sm text-[#dcdce2] line-clamp-2">{it.prompt_preview}</div>
-        </button>
-      ))}
+        );
+      })}
+
+      {loading && <div className="flex justify-center py-3"><span className="spinner" /></div>}
+      <div ref={sentinelRef} className="h-1" />
 
       {detail && (
         <div
@@ -493,12 +671,20 @@ function HistoryView({ rate, onUnauth }) {
           >
             <div className="flex items-center justify-between mb-4">
               <span className="text-xs text-muted">{fmtTime(detail.created_at)}</span>
-              <button
-                onClick={() => setDetail(null)}
-                className="text-muted hover:text-white text-sm"
-              >
-                Close
-              </button>
+              <div className="flex items-center gap-4">
+                <button
+                  onClick={(e) => del(detail.id, e)}
+                  className="text-muted hover:text-red-400 text-sm"
+                >
+                  Delete
+                </button>
+                <button
+                  onClick={() => setDetail(null)}
+                  className="text-muted hover:text-white text-sm"
+                >
+                  Close
+                </button>
+              </div>
             </div>
             <div className="text-xs uppercase tracking-wide text-muted mb-1.5">Prompt</div>
             <div className="bg-panel2 border border-edge rounded-xl px-4 py-3 text-sm whitespace-pre-wrap mb-5">

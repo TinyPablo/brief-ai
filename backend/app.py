@@ -377,16 +377,38 @@ def generate():
     )
 
 
+HISTORY_PAGE = 30
+
+
 @app.get("/api/history")
 @require_auth
 def history():
+    query = (request.args.get("q") or "").strip()
+    before = request.args.get("before")
+
+    conditions = []
+    params = []
+    if query:
+        like = "%" + query + "%"
+        conditions.append("(prompt ILIKE %s OR answer ILIKE %s)")
+        params.extend([like, like])
+    if before:
+        try:
+            conditions.append("id < %s")
+            params.append(int(before))
+        except ValueError:
+            pass
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
     with get_db() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
-            """SELECT id, created_at, model, LEFT(prompt, 140) AS prompt_preview,
-                      input_tokens, output_tokens, cost_usd, duration_ms, reasoning
-               FROM prompts
-               ORDER BY created_at DESC
-               LIMIT 100"""
+            f"""SELECT id, created_at, model, LEFT(prompt, 140) AS prompt_preview,
+                       input_tokens, output_tokens, cost_usd, duration_ms, reasoning
+                FROM prompts
+                {where}
+                ORDER BY id DESC
+                LIMIT {HISTORY_PAGE}""",
+            params,
         )
         rows = cur.fetchall()
     conn.close()
@@ -421,6 +443,15 @@ def history_item(item_id):
     row["created_at"] = row["created_at"].isoformat()
     row["model_label"] = MODELS.get(row["model"], {}).get("label", row["model"])
     return jsonify(row)
+
+
+@app.delete("/api/history/<int:item_id>")
+@require_auth
+def delete_history_item(item_id):
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM prompts WHERE id = %s", (item_id,))
+    conn.close()
+    return jsonify(ok=True)
 
 
 init_db()

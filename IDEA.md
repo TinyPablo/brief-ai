@@ -88,8 +88,10 @@ intentionally not committed.
 - `POST /api/logout` → `{ok}`
 - `GET  /api/config` → `{models:[{id,label,provider,provider_label,input,output,reasoning,est_pln}], default, usd_pln, max_tokens, reasoning_levels, default_reasoning}` *(auth)*
 - `POST /api/generate` `{model, prompt, reasoning}` → answer + tokens + cost + duration *(auth)*
-- `GET  /api/history` → last 100 rows (preview) *(auth)*
+- `GET  /api/history?q=&before=` → page of rows (preview, 30 per page, newest first); `q`
+  filters prompt+answer (ILIKE), `before` is an id cursor for infinite scroll *(auth)*
 - `GET  /api/history/:id` → full row *(auth)*
+- `DELETE /api/history/:id` → delete a row *(auth)*
 - `GET  /api/health` → `{ok}`
 
 ## Models & pricing

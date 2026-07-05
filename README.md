@@ -22,7 +22,8 @@ session, so you log in once and stay in across tabs.
 - Live cost estimate from the prompt length before sending.
 - Rendered Markdown answers with LaTeX math, syntax-highlighted code, and per-block copy buttons.
 - Shows generation time, input/output tokens, and price (in PLN) per prompt.
-- Prompt history stored in PostgreSQL and browsable in-app.
+- Prompt history stored in PostgreSQL — grouped by week/day (collapsible), full-text
+  search, infinite scroll, and per-conversation delete.
 
 ## Stack
 
