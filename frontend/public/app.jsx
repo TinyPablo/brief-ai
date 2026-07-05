@@ -31,7 +31,7 @@ function fmtTime(iso) {
 const SETTINGS_KEY = 'briefai_settings';
 const DEFAULT_SETTINGS = {
   dateOn: true,
-  timeTzOn: false,
+  timeOn: false,
   locOn: true,
   locText: 'Bielsko-Biała',
   userOn: false,
@@ -61,14 +61,11 @@ function formatDate(d) {
 function buildContext(settings) {
   const lines = [];
   if (settings.dateOn) {
-    let line = 'today is ' + formatDate(new Date());
-    if (settings.timeTzOn) {
-      const now = new Date();
-      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-      const time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      line += ', ' + time + ' ' + tz;
-    }
-    lines.push(line);
+    lines.push('today is ' + formatDate(new Date()));
+  }
+  if (settings.timeOn) {
+    const now = new Date();
+    lines.push('current time is ' + now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
   }
   if (settings.locOn && settings.locText.trim()) {
     lines.push('user is currently in ' + settings.locText.trim());
@@ -535,17 +532,15 @@ function SettingsView({ settings, setSettings }) {
           />
           <span className="text-sm">Today's date</span>
         </label>
-        {settings.dateOn && (
-          <label className="flex items-center gap-3 cursor-pointer pl-7">
-            <input
-              type="checkbox"
-              checked={settings.timeTzOn}
-              onChange={(e) => upd({ timeTzOn: e.target.checked })}
-              className="w-4 h-4 accent-accent"
-            />
-            <span className="text-sm text-muted">Include time + timezone</span>
-          </label>
-        )}
+        <label className="flex items-center gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={settings.timeOn}
+            onChange={(e) => upd({ timeOn: e.target.checked })}
+            className="w-4 h-4 accent-accent"
+          />
+          <span className="text-sm">Current time</span>
+        </label>
       </div>
 
       <div className="space-y-2">

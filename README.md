@@ -15,7 +15,7 @@ session, so you log in once and stay in across tabs.
 - 6-digit PIN login with a persistent session cookie.
 - Brute-force protection: 3-second server-side cooldown per login attempt.
 - Model picker grouped by provider — **Anthropic** (Haiku 4.5, Sonnet 4.6, Opus 4.8, Fable 5)
-  and **Google Gemini** (2.5 Flash Lite, 3.1 Flash Lite, 3.5 Flash, 3.1 Pro), each showing a
+  and **Google Gemini** (2.5 Flash Lite, 3.1 Flash Lite, 3.5 Flash), each showing a
   per-prompt price estimate.
 - Unified reasoning selector (Low–Max) mapped to Anthropic effort / Gemini thinking level.
 - Optional prompt context (date, location, personal data) toggled in Settings and stored in the browser.

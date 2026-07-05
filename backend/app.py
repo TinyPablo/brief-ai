@@ -45,7 +45,6 @@ MODELS = {
     "gemini-2.5-flash-lite": {"label": "Gemini 2.5 Flash Lite", "provider": "google", "input": 0.10, "output": 0.40},
     "gemini-3.1-flash-lite": {"label": "Gemini 3.1 Flash Lite", "provider": "google", "input": 0.25, "output": 1.50},
     "gemini-3.5-flash": {"label": "Gemini 3.5 Flash", "provider": "google", "input": 1.50, "output": 9.00},
-    "gemini-3.1-pro-preview": {"label": "Gemini 3.1 Pro", "provider": "google", "input": 2.00, "output": 12.00},
     "claude-haiku-4-5": {"label": "Haiku 4.5", "provider": "anthropic", "input": 1.0, "output": 5.0, "effort": False},
     "claude-sonnet-4-6": {"label": "Sonnet 4.6", "provider": "anthropic", "input": 3.0, "output": 15.0, "effort": True},
     "claude-opus-4-8": {"label": "Opus 4.8", "provider": "anthropic", "input": 5.0, "output": 25.0, "effort": True},
@@ -55,7 +54,6 @@ MODEL_ORDER = [
     "gemini-2.5-flash-lite",
     "gemini-3.1-flash-lite",
     "gemini-3.5-flash",
-    "gemini-3.1-pro-preview",
     "claude-haiku-4-5",
     "claude-sonnet-4-6",
     "claude-opus-4-8",
@@ -88,7 +86,8 @@ CREATE TABLE IF NOT EXISTS prompts (
     output_tokens INTEGER NOT NULL DEFAULT 0,
     cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
     duration_ms INTEGER NOT NULL DEFAULT 0,
-    stop_reason TEXT
+    stop_reason TEXT,
+    reasoning TEXT
 )
 """
 
@@ -122,6 +121,7 @@ def init_db():
     try:
         with conn, conn.cursor() as cur:
             cur.execute(CREATE_SQL)
+            cur.execute("ALTER TABLE prompts ADD COLUMN IF NOT EXISTS reasoning TEXT")
     except psycopg2.Error as exc:
         print("init_db:", exc)
     finally:
@@ -343,13 +343,21 @@ def generate():
     out_tok = result["output_tokens"]
     cost = in_tok / 1_000_000 * price["input"] + out_tok / 1_000_000 * price["output"]
 
+    cfg = MODELS[model]
+    supports_reasoning = (
+        (cfg["provider"] == "anthropic" and cfg.get("effort"))
+        or (cfg["provider"] == "google" and model.startswith("gemini-3"))
+    )
+    stored_reasoning = reasoning if supports_reasoning else None
+
     with get_db() as conn, conn.cursor() as cur:
         cur.execute(
             """INSERT INTO prompts
-               (model, prompt, answer, input_tokens, output_tokens, cost_usd, duration_ms, stop_reason)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+               (model, prompt, answer, input_tokens, output_tokens, cost_usd, duration_ms, stop_reason, reasoning)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                RETURNING id, created_at""",
-            (served, prompt, result["answer"], in_tok, out_tok, cost, duration_ms, result["stop_reason"]),
+            (served, prompt, result["answer"], in_tok, out_tok, cost, duration_ms,
+             result["stop_reason"], stored_reasoning),
         )
         row = cur.fetchone()
     conn.close()
@@ -365,6 +373,7 @@ def generate():
         cost_usd=cost,
         duration_ms=duration_ms,
         stop_reason=result["stop_reason"],
+        reasoning=stored_reasoning,
     )
 
 
@@ -374,7 +383,7 @@ def history():
     with get_db() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             """SELECT id, created_at, model, LEFT(prompt, 140) AS prompt_preview,
-                      input_tokens, output_tokens, cost_usd, duration_ms
+                      input_tokens, output_tokens, cost_usd, duration_ms, reasoning
                FROM prompts
                ORDER BY created_at DESC
                LIMIT 100"""
@@ -393,6 +402,7 @@ def history():
             "output_tokens": r["output_tokens"],
             "cost_usd": r["cost_usd"],
             "duration_ms": r["duration_ms"],
+            "reasoning": r["reasoning"],
         }
         for r in rows
     ]

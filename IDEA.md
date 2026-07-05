@@ -79,6 +79,7 @@ intentionally not committed.
 | cost_usd       | double        | computed from per-model pricing        |
 | duration_ms    | integer       | round-trip time of the API call        |
 | stop_reason    | text          | e.g. end_turn, max_tokens, refusal     |
+| reasoning      | text          | reasoning level used, or null if n/a   |
 
 ## HTTP API
 
@@ -102,7 +103,6 @@ tokens (input / output). `effort` (Anthropic only) marks models that accept
 | gemini-2.5-flash-lite  | Gemini 2.5 Flash Lite | google   | 0.10  | 0.40   | —      |
 | gemini-3.1-flash-lite  | Gemini 3.1 Flash Lite | google   | 0.25  | 1.50   | —      |
 | gemini-3.5-flash       | Gemini 3.5 Flash    | google   | 1.50  | 9.00   | —      |
-| gemini-3.1-pro-preview | Gemini 3.1 Pro      | google   | 2.00  | 12.00  | —      |
 | claude-haiku-4-5       | Haiku 4.5           | anthropic| 1     | 5      | no     |
 | claude-sonnet-4-6      | Sonnet 4.6          | anthropic| 3     | 15     | yes    |
 | claude-opus-4-8        | Opus 4.8            | anthropic| 5     | 25     | yes    |
@@ -146,7 +146,8 @@ The Settings tab stores a small object in the browser (`localStorage`, key
 sending. Nothing about this is server-side; the composed text is what gets stored in
 history.
 
-- `today is <date>` — from the browser clock; optional time + IANA timezone.
+- `today is <date>` — from the browser clock.
+- `current time is <HH:MM>` — optional, separate toggle (no timezone).
 - `user is currently in <text>` — editable location (default "Bielsko-Biała").
 - `user data: <text>` — free-form personal context (default off).
 
