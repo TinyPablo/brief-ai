@@ -86,8 +86,8 @@ intentionally not committed.
 - `POST /api/login` `{pin}` → `{ok}` / `401` / `429 {retry_after}`
 - `GET  /api/session` → `{authenticated}`
 - `POST /api/logout` → `{ok}`
-- `GET  /api/config` → `{models:[{id,label,provider,provider_label,input,output,reasoning,est_pln}], default, usd_pln, max_tokens, reasoning_levels, default_reasoning}` *(auth)*
-- `POST /api/generate` `{model, prompt, reasoning}` → answer + tokens + cost + duration *(auth)*
+- `GET  /api/config` → `{models:[{id,label,provider,provider_label,input,output,controls,fixed,est_pln}], default, usd_pln, max_tokens}` *(auth)*
+- `POST /api/generate` `{model, prompt, effort, thinking}` → answer + tokens + cost + duration *(auth)*
 - `GET  /api/history?q=&before=` → page of rows (preview, 30 per page, newest first); `q`
   filters prompt+answer (ILIKE), `before` is an id cursor for infinite scroll *(auth)*
 - `GET  /api/history/:id` → full row *(auth)*
@@ -126,20 +126,23 @@ Notes:
 - Anthropic refusals (`stop_reason == "refusal"`) and empty/blocked Gemini
   responses are surfaced as a short note.
 
-## Reasoning level
+## Reasoning controls (per model)
 
-One unified "Reasoning" control (`low` / `medium` / `high` / `max`, default `low`
-= fastest) maps per provider in the backend:
+`/api/config` returns per-model `controls` (interactive dropdowns) and `fixed`
+(read-only labels). The frontend renders whatever the model exposes; defaults are
+always the lowest. `/api/generate` takes `effort` and `thinking`.
 
-- **Anthropic** (Sonnet 4.6, Opus 4.8, Fable 5): `output_config.effort`. Haiku 4.5
-  has no effort, so the control is a no-op there.
-- **Gemini** (3.x only): `thinking_config.thinking_level` (`max` → `high`). Applied
-  only to `gemini-3*` models and built defensively (if the SDK/model rejects it, no
-  thinking config is sent). Gemini 2.5 keeps its native default (thinking off).
+- **Anthropic Sonnet 4.6 / Opus 4.8**: `Effort` (low/medium/high/max, default low →
+  `output_config.effort`) + `Thinking` (off/on, default off → `thinking:
+  {type:"adaptive"}` when on).
+- **Anthropic Fable 5**: `Effort` selectable; `Thinking` fixed "On" (always thinks).
+- **Anthropic Haiku 4.5**: no controls (shown as "Default").
+- **Gemini 3.x**: single `Effort` (low/medium/high → `thinking_config.thinking_level`,
+  built defensively; `max` → `high`).
+- **Gemini 2.5**: fixed "Effort: Off" (native thinking off).
 
-`/api/config` exposes `reasoning` (bool, whether the control applies) per model plus
-`reasoning_levels` / `default_reasoning`. The frontend disables the dropdown when the
-selected model's `reasoning` is false.
+The applied combination is summarised into the `reasoning` column (e.g. `Low`,
+`Medium · thinking`) and shown in history.
 
 ## Prompt context (client-side settings)
 
@@ -148,8 +151,7 @@ The Settings tab stores a small object in the browser (`localStorage`, key
 sending. Nothing about this is server-side; the composed text is what gets stored in
 history.
 
-- `today is <date>` — from the browser clock.
-- `current time is <HH:MM>` — optional, separate toggle (no timezone).
+- `now: <date>, <HH:MM>` — single "Date & time" toggle (default on), from the browser clock.
 - `user is currently in <text>` — editable location (default "Bielsko-Biała").
 - `user data: <text>` — free-form personal context (default off).
 

@@ -65,10 +65,11 @@ DEFAULT_MODEL = "gemini-3.1-flash-lite"
 MAX_TOKENS = 4096
 LOGIN_COOLDOWN = 3.0
 
-# Unified reasoning levels, mapped per provider (Anthropic effort / Gemini
-# thinking_level). Default is the fastest level.
-REASONING_LEVELS = ["low", "medium", "high", "max"]
-DEFAULT_REASONING = "low"
+# Effort levels. Anthropic effort-capable models accept all of them; Gemini 3.x
+# maps effort to thinking_level (low/medium/high). Default is the fastest.
+EFFORT_LEVELS = ["low", "medium", "high", "max"]
+GEMINI_EFFORT_LEVELS = ["low", "medium", "high"]
+DEFAULT_EFFORT = "low"
 
 # Per-prompt price estimate assumptions, converted to PLN with a fixed rate.
 ESTIMATE_INPUT_TOKENS = 1000
@@ -136,6 +137,20 @@ def estimate_pln(cfg):
     return round(usd * USD_TO_PLN, 4)
 
 
+def build_reasoning_label(model, effort, thinking):
+    cfg = MODELS[model]
+    if cfg["provider"] == "anthropic":
+        if not cfg.get("effort"):
+            return None
+        parts = [effort.capitalize()] if effort in EFFORT_LEVELS else []
+        if model == "claude-fable-5" or thinking == "on":
+            parts.append("thinking")
+        return " · ".join(parts) if parts else None
+    if model.startswith("gemini-3"):
+        return effort.capitalize() if effort in GEMINI_EFFORT_LEVELS else None
+    return None
+
+
 def client_ip():
     forwarded = request.headers.get("X-Forwarded-For", "")
     if forwarded:
@@ -152,7 +167,7 @@ def require_auth(view):
     return wrapper
 
 
-def call_anthropic(model, prompt, reasoning):
+def call_anthropic(model, prompt, effort, thinking):
     cfg = MODELS[model]
     kwargs = dict(
         model=model,
@@ -160,8 +175,11 @@ def call_anthropic(model, prompt, reasoning):
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],
     )
-    if cfg.get("effort") and reasoning in REASONING_LEVELS:
-        kwargs["output_config"] = {"effort": reasoning}
+    if cfg.get("effort"):
+        if effort in EFFORT_LEVELS:
+            kwargs["output_config"] = {"effort": effort}
+        if model != "claude-fable-5" and thinking == "on":
+            kwargs["thinking"] = {"type": "adaptive"}
 
     if model == "claude-fable-5":
         try:
@@ -202,13 +220,13 @@ def build_gemini_thinking(reasoning):
         return None
 
 
-def call_gemini(model, prompt, reasoning):
+def call_gemini(model, prompt, effort):
     if gemini_client is None:
         raise RuntimeError("GEMINI_API_KEY is not configured")
 
     config_args = dict(system_instruction=SYSTEM_PROMPT, max_output_tokens=MAX_TOKENS)
     if model.startswith("gemini-3"):
-        thinking = build_gemini_thinking(reasoning)
+        thinking = build_gemini_thinking(effort)
         if thinking is not None:
             config_args["thinking_config"] = thinking
 
@@ -283,13 +301,27 @@ def logout():
 @app.get("/api/config")
 @require_auth
 def config():
+    effort_options = [{"value": v, "label": v.capitalize()} for v in EFFORT_LEVELS]
+    gemini_effort_options = [{"value": v, "label": v.capitalize()} for v in GEMINI_EFFORT_LEVELS]
+    thinking_options = [{"value": "off", "label": "Off"}, {"value": "on", "label": "On"}]
+
     models = []
     for model_id in MODEL_ORDER:
         cfg = MODELS[model_id]
-        supports_reasoning = (
-            (cfg["provider"] == "anthropic" and cfg.get("effort"))
-            or (cfg["provider"] == "google" and model_id.startswith("gemini-3"))
-        )
+        controls = []
+        fixed = []
+        if cfg["provider"] == "anthropic":
+            if cfg.get("effort"):
+                controls.append({"id": "effort", "label": "Effort", "options": effort_options, "default": "low"})
+                if model_id == "claude-fable-5":
+                    fixed.append({"label": "Thinking", "value": "On"})
+                else:
+                    controls.append({"id": "thinking", "label": "Thinking", "options": thinking_options, "default": "off"})
+        else:
+            if model_id.startswith("gemini-3"):
+                controls.append({"id": "effort", "label": "Effort", "options": gemini_effort_options, "default": "low"})
+            else:
+                fixed.append({"label": "Effort", "value": "Off"})
         models.append({
             "id": model_id,
             "label": cfg["label"],
@@ -297,7 +329,8 @@ def config():
             "provider_label": PROVIDER_LABELS[cfg["provider"]],
             "input": cfg["input"],
             "output": cfg["output"],
-            "reasoning": bool(supports_reasoning),
+            "controls": controls,
+            "fixed": fixed,
             "est_pln": estimate_pln(cfg),
         })
     return jsonify(
@@ -305,8 +338,6 @@ def config():
         default=DEFAULT_MODEL,
         usd_pln=USD_TO_PLN,
         max_tokens=MAX_TOKENS,
-        reasoning_levels=[{"value": lvl, "label": lvl.capitalize()} for lvl in REASONING_LEVELS],
-        default_reasoning=DEFAULT_REASONING,
     )
 
 
@@ -321,17 +352,20 @@ def generate():
     if not prompt:
         return jsonify(error="empty_prompt"), 400
 
-    reasoning = data.get("reasoning", DEFAULT_REASONING)
-    if reasoning not in REASONING_LEVELS:
-        reasoning = DEFAULT_REASONING
+    effort = data.get("effort", DEFAULT_EFFORT)
+    if effort not in EFFORT_LEVELS:
+        effort = DEFAULT_EFFORT
+    thinking = data.get("thinking", "off")
+    if thinking not in ("on", "off"):
+        thinking = "off"
 
     provider = MODELS[model]["provider"]
     start = time.perf_counter()
     try:
         if provider == "google":
-            result = call_gemini(model, prompt, reasoning)
+            result = call_gemini(model, prompt, effort)
         else:
-            result = call_anthropic(model, prompt, reasoning)
+            result = call_anthropic(model, prompt, effort, thinking)
     except Exception as exc:  # surface API/network errors to the client
         traceback.print_exc()
         return jsonify(error="api_error", detail=str(exc)), 502
@@ -343,12 +377,7 @@ def generate():
     out_tok = result["output_tokens"]
     cost = in_tok / 1_000_000 * price["input"] + out_tok / 1_000_000 * price["output"]
 
-    cfg = MODELS[model]
-    supports_reasoning = (
-        (cfg["provider"] == "anthropic" and cfg.get("effort"))
-        or (cfg["provider"] == "google" and model.startswith("gemini-3"))
-    )
-    stored_reasoning = reasoning if supports_reasoning else None
+    stored_reasoning = build_reasoning_label(model, effort, thinking)
 
     with get_db() as conn, conn.cursor() as cur:
         cur.execute(

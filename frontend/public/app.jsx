@@ -30,8 +30,7 @@ function fmtTime(iso) {
 
 const SETTINGS_KEY = 'briefai_settings';
 const DEFAULT_SETTINGS = {
-  dateOn: true,
-  timeOn: false,
+  nowOn: true,
   locOn: true,
   locText: 'Bielsko-Biała',
   userOn: false,
@@ -60,12 +59,10 @@ function formatDate(d) {
 
 function buildContext(settings) {
   const lines = [];
-  if (settings.dateOn) {
-    lines.push('today is ' + formatDate(new Date()));
-  }
-  if (settings.timeOn) {
+  if (settings.nowOn) {
     const now = new Date();
-    lines.push('current time is ' + now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+    const time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    lines.push('now: ' + formatDate(now) + ', ' + time);
   }
   if (settings.locOn && settings.locText.trim()) {
     lines.push('user is currently in ' + settings.locText.trim());
@@ -122,11 +119,7 @@ function Meta({ result, rate, onCopy, copied }) {
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted border-b border-edge pb-3 mb-4">
       <span className="text-accent2 font-medium">{result.model_label}</span>
-      {result.reasoning && (
-        <span className="uppercase text-[10px] tracking-wide border border-edge rounded px-1.5 py-0.5">
-          {result.reasoning}
-        </span>
-      )}
+      {result.reasoning && <span>{result.reasoning}</span>}
       <span>{fmtDuration(result.duration_ms)}</span>
       <span>{result.input_tokens.toLocaleString()} in / {result.output_tokens.toLocaleString()} out</span>
       <span>{zl(result.cost_usd * rate)}</span>
@@ -260,10 +253,11 @@ function groupByProvider(models) {
   return groups;
 }
 
-function AskView({ models, model, setModel, reasoning, setReasoning, reasoningLevels, rate, maxTokens, settings, onUnauth }) {
+function AskView({ models, model, setModel, effort, setEffort, thinking, setThinking, rate, maxTokens, settings, onUnauth }) {
   const groups = useMemo(() => groupByProvider(models), [models]);
   const currentModel = models.find((m) => m.id === model) || null;
-  const reasoningSupported = currentModel ? currentModel.reasoning : false;
+  const controls = currentModel ? (currentModel.controls || []) : [];
+  const fixed = currentModel ? (currentModel.fixed || []) : [];
   const [prompt, setPrompt] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
@@ -298,7 +292,7 @@ function AskView({ models, model, setModel, reasoning, setReasoning, reasoningLe
     try {
       const res = await api('/generate', {
         method: 'POST',
-        body: JSON.stringify({ model, prompt: text, reasoning }),
+        body: JSON.stringify({ model, prompt: text, effort, thinking }),
       });
       if (res.status === 401) { onUnauth(); return; }
       const data = await res.json().catch(() => ({}));
@@ -351,7 +345,7 @@ function AskView({ models, model, setModel, reasoning, setReasoning, reasoningLe
           className="w-full bg-transparent resize-y outline-none px-3.5 py-3 text-[0.95rem] placeholder:text-muted/70 min-h-[7rem]"
         />
         <div className="flex flex-wrap items-center justify-between gap-2 px-2.5 pb-1.5 pt-1">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <select
               value={model}
               onChange={(e) => setModel(e.target.value)}
@@ -365,17 +359,35 @@ function AskView({ models, model, setModel, reasoning, setReasoning, reasoningLe
                 </optgroup>
               ))}
             </select>
-            <select
-              value={reasoning}
-              onChange={(e) => setReasoning(e.target.value)}
-              disabled={!reasoningSupported}
-              title={reasoningSupported ? 'Reasoning effort' : 'This model uses its default'}
-              className="bg-panel2 border border-edge rounded-lg text-sm px-2.5 py-1.5 outline-none hover:border-accent/50 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              {reasoningLevels.map((lvl) => (
-                <option key={lvl.value} value={lvl.value}>{lvl.label}</option>
-              ))}
-            </select>
+
+            {controls.map((c) => {
+              const value = c.id === 'effort' ? effort : thinking;
+              const setValue = c.id === 'effort' ? setEffort : setThinking;
+              return (
+                <label key={c.id} className="flex items-center gap-1.5 text-xs text-muted">
+                  {c.label}
+                  <select
+                    value={value}
+                    onChange={(e) => setValue(e.target.value)}
+                    className="bg-panel2 border border-edge rounded-lg text-sm px-2 py-1.5 outline-none hover:border-accent/50 transition cursor-pointer"
+                  >
+                    {c.options.map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                </label>
+              );
+            })}
+
+            {fixed.map((f, i) => (
+              <span key={i} className="text-xs text-muted/70 border border-edge rounded-lg px-2 py-1.5">
+                {f.label}: {f.value}
+              </span>
+            ))}
+
+            {controls.length === 0 && fixed.length === 0 && (
+              <span className="text-xs text-muted/70 border border-edge rounded-lg px-2 py-1.5">Default</span>
+            )}
           </div>
 
           <div className="flex items-center gap-2">
@@ -459,8 +471,9 @@ function dayLabel(d) {
   const today = new Date();
   const yesterday = new Date();
   yesterday.setDate(today.getDate() - 1);
-  if (dayKey(d) === dayKey(today)) return 'Today';
-  if (dayKey(d) === dayKey(yesterday)) return 'Yesterday';
+  const dstr = d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+  if (dayKey(d) === dayKey(today)) return 'Today (' + dstr + ')';
+  if (dayKey(d) === dayKey(yesterday)) return 'Yesterday (' + dstr + ')';
   return d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
 }
 
@@ -585,13 +598,23 @@ function HistoryView({ rate, onUnauth }) {
 
   return (
     <div className="space-y-3">
-      <input
-        type="text"
-        value={q}
-        onChange={(e) => setQ(e.target.value)}
-        placeholder="Search prompts and answers…"
-        className="w-full bg-panel border border-edge rounded-xl text-sm px-4 py-2.5 outline-none focus:border-accent/60 transition-colors"
-      />
+      <div className="relative">
+        <svg
+          className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted pointer-events-none"
+          viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+          strokeLinecap="round" strokeLinejoin="round"
+        >
+          <circle cx="11" cy="11" r="7" />
+          <line x1="21" y1="21" x2="16.65" y2="16.65" />
+        </svg>
+        <input
+          type="text"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Search"
+          className="w-full bg-panel border border-edge rounded-xl text-sm pl-10 pr-4 py-2.5 outline-none focus:border-accent/60 transition-colors"
+        />
+      </div>
 
       {loaded && items.length === 0 && (
         <div className="text-muted text-sm px-1">{q.trim() ? 'No matches.' : 'No prompts yet.'}</div>
@@ -630,11 +653,7 @@ function HistoryView({ rate, onUnauth }) {
                       <button onClick={() => open(it.id)} className="flex-1 min-w-0 text-left">
                         <div className="flex items-center gap-3 text-xs text-muted mb-1.5">
                           <span className="text-accent2 font-medium">{it.model_label}</span>
-                          {it.reasoning && (
-                            <span className="uppercase text-[10px] tracking-wide border border-edge rounded px-1.5 py-0.5">
-                              {it.reasoning}
-                            </span>
-                          )}
+                          {it.reasoning && <span>{it.reasoning}</span>}
                           <span>{fmtTime(it.created_at)}</span>
                           <span className="ml-auto">{zl(it.cost_usd * rate)}</span>
                           <span>{fmtDuration(it.duration_ms)}</span>
@@ -708,26 +727,15 @@ function SettingsView({ settings, setSettings }) {
         Context is attached above every prompt. Toggle what gets sent to the model.
       </p>
 
-      <div className="space-y-3">
-        <label className="flex items-center gap-3 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={settings.dateOn}
-            onChange={(e) => upd({ dateOn: e.target.checked })}
-            className="w-4 h-4 accent-accent"
-          />
-          <span className="text-sm">Today's date</span>
-        </label>
-        <label className="flex items-center gap-3 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={settings.timeOn}
-            onChange={(e) => upd({ timeOn: e.target.checked })}
-            className="w-4 h-4 accent-accent"
-          />
-          <span className="text-sm">Current time</span>
-        </label>
-      </div>
+      <label className="flex items-center gap-3 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={settings.nowOn}
+          onChange={(e) => upd({ nowOn: e.target.checked })}
+          className="w-4 h-4 accent-accent"
+        />
+        <span className="text-sm">Date &amp; time (now)</span>
+      </label>
 
       <div className="space-y-2">
         <label className="flex items-center gap-3 cursor-pointer">
@@ -780,8 +788,8 @@ function Main({ onLogout }) {
   const [model, setModel] = useState('');
   const [rate, setRate] = useState(1);
   const [maxTokens, setMaxTokens] = useState(4096);
-  const [reasoningLevels, setReasoningLevels] = useState([]);
-  const [reasoning, setReasoning] = useState('low');
+  const [effort, setEffort] = useState('low');
+  const [thinking, setThinking] = useState('off');
   const [settings, setSettings] = useState(loadSettings);
 
   useEffect(() => {
@@ -791,10 +799,18 @@ function Main({ onLogout }) {
       setModel(d.default);
       setRate(d.usd_pln || 1);
       setMaxTokens(d.max_tokens || 4096);
-      setReasoningLevels(d.reasoning_levels || []);
-      setReasoning(d.default_reasoning || 'low');
     });
   }, []);
+
+  // Reset effort/thinking to the selected model's control defaults (always lowest).
+  useEffect(() => {
+    const m = models.find((x) => x.id === model);
+    if (!m) return;
+    const ef = (m.controls || []).find((c) => c.id === 'effort');
+    const th = (m.controls || []).find((c) => c.id === 'thinking');
+    setEffort(ef ? ef.default : 'low');
+    setThinking(th ? th.default : 'off');
+  }, [model, models]);
 
   useEffect(() => {
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) { /* noop */ }
@@ -846,9 +862,10 @@ function Main({ onLogout }) {
             models={models}
             model={model}
             setModel={setModel}
-            reasoning={reasoning}
-            setReasoning={setReasoning}
-            reasoningLevels={reasoningLevels}
+            effort={effort}
+            setEffort={setEffort}
+            thinking={thinking}
+            setThinking={setThinking}
             rate={rate}
             maxTokens={maxTokens}
             settings={settings}
