@@ -28,6 +28,63 @@ function fmtTime(iso) {
   }
 }
 
+const SETTINGS_KEY = 'briefai_settings';
+const DEFAULT_SETTINGS = {
+  dateOn: true,
+  timeTzOn: false,
+  locOn: true,
+  locText: 'Bielsko-Biała',
+  userOn: false,
+  userText: '',
+};
+
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    return raw ? { ...DEFAULT_SETTINGS, ...JSON.parse(raw) } : { ...DEFAULT_SETTINGS };
+  } catch (e) {
+    return { ...DEFAULT_SETTINGS };
+  }
+}
+
+function ordinal(n) {
+  const s = n % 100;
+  if (s >= 11 && s <= 13) return n + 'th';
+  return n + (['th', 'st', 'nd', 'rd'][n % 10] || 'th');
+}
+
+function formatDate(d) {
+  const month = d.toLocaleString('en-US', { month: 'long' });
+  return ordinal(d.getDate()) + ' ' + month + ' ' + d.getFullYear();
+}
+
+function buildContext(settings) {
+  const lines = [];
+  if (settings.dateOn) {
+    let line = 'today is ' + formatDate(new Date());
+    if (settings.timeTzOn) {
+      const now = new Date();
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      line += ', ' + time + ' ' + tz;
+    }
+    lines.push(line);
+  }
+  if (settings.locOn && settings.locText.trim()) {
+    lines.push('user is currently in ' + settings.locText.trim());
+  }
+  if (settings.userOn && settings.userText.trim()) {
+    lines.push('user data: ' + settings.userText.trim());
+  }
+  return lines.join('\n');
+}
+
+function composePrompt(prompt, settings, brief) {
+  const ctx = buildContext(settings);
+  const prefix = brief ? 'very brief: ' : '';
+  return (ctx ? ctx + '\n\n' : '') + prefix + prompt;
+}
+
 if (window.markedKatex) {
   marked.use(window.markedKatex({ throwOnError: false, nonStandard: true, output: 'html' }));
 }
@@ -201,8 +258,10 @@ function groupByProvider(models) {
   return groups;
 }
 
-function AskView({ models, model, setModel, rate, onUnauth }) {
+function AskView({ models, model, setModel, reasoning, setReasoning, reasoningLevels, rate, maxTokens, settings, onUnauth }) {
   const groups = useMemo(() => groupByProvider(models), [models]);
+  const currentModel = models.find((m) => m.id === model) || null;
+  const reasoningSupported = currentModel ? currentModel.reasoning : false;
   const [prompt, setPrompt] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
@@ -218,8 +277,18 @@ function AskView({ models, model, setModel, rate, onUnauth }) {
     return () => clearInterval(t);
   }, [loading]);
 
-  const doSend = async (text) => {
-    if (!text.trim() || loading) return;
+  const estimate = useMemo(() => {
+    if (!currentModel || !prompt.trim()) return null;
+    const composed = composePrompt(prompt, settings, false);
+    const inTok = Math.ceil(composed.length / 4);
+    const outTok = Math.min(Math.round(inTok * 1.5), maxTokens);
+    const usd = inTok / 1e6 * currentModel.input + outTok / 1e6 * currentModel.output;
+    return usd * rate;
+  }, [prompt, currentModel, settings, maxTokens, rate]);
+
+  const doSend = async (brief) => {
+    if (!prompt.trim() || loading) return;
+    const text = composePrompt(prompt, settings, brief);
     setLoading(true);
     setResult(null);
     setError('');
@@ -227,7 +296,7 @@ function AskView({ models, model, setModel, rate, onUnauth }) {
     try {
       const res = await api('/generate', {
         method: 'POST',
-        body: JSON.stringify({ model, prompt: text }),
+        body: JSON.stringify({ model, prompt: text, reasoning }),
       });
       if (res.status === 401) { onUnauth(); return; }
       const data = await res.json().catch(() => ({}));
@@ -243,8 +312,8 @@ function AskView({ models, model, setModel, rate, onUnauth }) {
     }
   };
 
-  const send = () => doSend(prompt);
-  const sendBrief = () => doSend('very brief: ' + prompt);
+  const send = () => doSend(false);
+  const sendBrief = () => doSend(true);
 
   const clearAll = () => {
     setPrompt('');
@@ -279,20 +348,33 @@ function AskView({ models, model, setModel, rate, onUnauth }) {
           rows={4}
           className="w-full bg-transparent resize-y outline-none px-3.5 py-3 text-[0.95rem] placeholder:text-muted/70 min-h-[7rem]"
         />
-        <div className="flex items-center justify-between px-2.5 pb-1.5 pt-1">
-          <select
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            className="bg-panel2 border border-edge rounded-lg text-sm px-2.5 py-1.5 outline-none hover:border-accent/50 transition cursor-pointer"
-          >
-            {groups.map((g) => (
-              <optgroup key={g.label} label={g.label}>
-                {g.items.map((m) => (
-                  <option key={m.id} value={m.id}>{m.label} · ~{zl(m.est_pln)}</option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
+        <div className="flex flex-wrap items-center justify-between gap-2 px-2.5 pb-1.5 pt-1">
+          <div className="flex items-center gap-2">
+            <select
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              className="bg-panel2 border border-edge rounded-lg text-sm px-2.5 py-1.5 outline-none hover:border-accent/50 transition cursor-pointer"
+            >
+              {groups.map((g) => (
+                <optgroup key={g.label} label={g.label}>
+                  {g.items.map((m) => (
+                    <option key={m.id} value={m.id}>{m.label} · ~{zl(m.est_pln)}</option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+            <select
+              value={reasoning}
+              onChange={(e) => setReasoning(e.target.value)}
+              disabled={!reasoningSupported}
+              title={reasoningSupported ? 'Reasoning effort' : 'This model uses its default'}
+              className="bg-panel2 border border-edge rounded-lg text-sm px-2.5 py-1.5 outline-none hover:border-accent/50 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {reasoningLevels.map((lvl) => (
+                <option key={lvl.value} value={lvl.value}>{lvl.label}</option>
+              ))}
+            </select>
+          </div>
 
           <div className="flex items-center gap-2">
             <button
@@ -322,10 +404,13 @@ function AskView({ models, model, setModel, rate, onUnauth }) {
         </div>
       </div>
 
-      <p className="text-xs text-muted/70 px-1">
-        Press <kbd className="font-mono">{navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'}</kbd>
-        {' '}+ <kbd className="font-mono">↵</kbd> to send
-      </p>
+      <div className="flex items-center justify-between gap-2 px-1 text-xs text-muted/70">
+        <span>
+          Press <kbd className="font-mono">{navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'}</kbd>
+          {' '}+ <kbd className="font-mono">↵</kbd> to send
+        </span>
+        {estimate != null && <span>est. ~{zl(estimate)}</span>}
+      </div>
 
       {loading && (
         <div className="text-sm text-muted flex items-center gap-2 px-1">
@@ -432,11 +517,91 @@ function HistoryView({ rate, onUnauth }) {
   );
 }
 
+function SettingsView({ settings, setSettings }) {
+  const upd = (patch) => setSettings((s) => ({ ...s, ...patch }));
+  return (
+    <div className="bg-panel border border-edge rounded-2xl p-5 space-y-5 fade-in">
+      <p className="text-sm text-muted">
+        Context is attached above every prompt. Toggle what gets sent to the model.
+      </p>
+
+      <div className="space-y-3">
+        <label className="flex items-center gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={settings.dateOn}
+            onChange={(e) => upd({ dateOn: e.target.checked })}
+            className="w-4 h-4 accent-accent"
+          />
+          <span className="text-sm">Today's date</span>
+        </label>
+        {settings.dateOn && (
+          <label className="flex items-center gap-3 cursor-pointer pl-7">
+            <input
+              type="checkbox"
+              checked={settings.timeTzOn}
+              onChange={(e) => upd({ timeTzOn: e.target.checked })}
+              className="w-4 h-4 accent-accent"
+            />
+            <span className="text-sm text-muted">Include time + timezone</span>
+          </label>
+        )}
+      </div>
+
+      <div className="space-y-2">
+        <label className="flex items-center gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={settings.locOn}
+            onChange={(e) => upd({ locOn: e.target.checked })}
+            className="w-4 h-4 accent-accent"
+          />
+          <span className="text-sm">Location</span>
+        </label>
+        <input
+          type="text"
+          value={settings.locText}
+          onChange={(e) => upd({ locText: e.target.value })}
+          disabled={!settings.locOn}
+          placeholder="e.g. Bielsko-Biała"
+          className="w-full bg-panel2 border border-edge rounded-lg text-sm px-3 py-2 outline-none focus:border-accent/60 disabled:opacity-40"
+        />
+      </div>
+
+      <div className="space-y-2">
+        <label className="flex items-center gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={settings.userOn}
+            onChange={(e) => upd({ userOn: e.target.checked })}
+            className="w-4 h-4 accent-accent"
+          />
+          <span className="text-sm">User data</span>
+        </label>
+        <textarea
+          value={settings.userText}
+          onChange={(e) => upd({ userText: e.target.value })}
+          disabled={!settings.userOn}
+          rows={3}
+          placeholder="e.g. 20yo, 181cm, 62kg, bulking ~3 months"
+          className="w-full bg-panel2 border border-edge rounded-lg text-sm px-3 py-2 outline-none resize-y focus:border-accent/60 disabled:opacity-40"
+        />
+      </div>
+
+      <p className="text-xs text-muted/70">Saved automatically in this browser.</p>
+    </div>
+  );
+}
+
 function Main({ onLogout }) {
   const [tab, setTab] = useState('ask');
   const [models, setModels] = useState([]);
   const [model, setModel] = useState('');
   const [rate, setRate] = useState(1);
+  const [maxTokens, setMaxTokens] = useState(4096);
+  const [reasoningLevels, setReasoningLevels] = useState([]);
+  const [reasoning, setReasoning] = useState('low');
+  const [settings, setSettings] = useState(loadSettings);
 
   useEffect(() => {
     api('/config').then((r) => (r.ok ? r.json() : null)).then((d) => {
@@ -444,8 +609,15 @@ function Main({ onLogout }) {
       setModels(d.models);
       setModel(d.default);
       setRate(d.usd_pln || 1);
+      setMaxTokens(d.max_tokens || 4096);
+      setReasoningLevels(d.reasoning_levels || []);
+      setReasoning(d.default_reasoning || 'low');
     });
   }, []);
+
+  useEffect(() => {
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) { /* noop */ }
+  }, [settings]);
 
   const logout = async () => {
     try { await api('/logout', { method: 'POST' }); } catch (e) { /* noop */ }
@@ -476,6 +648,7 @@ function Main({ onLogout }) {
           <nav className="flex items-center gap-1 ml-2">
             {tabBtn('ask', 'Ask')}
             {tabBtn('history', 'History')}
+            {tabBtn('settings', 'Settings')}
           </nav>
           <button
             onClick={logout}
@@ -488,9 +661,21 @@ function Main({ onLogout }) {
 
       <main className="max-w-2xl mx-auto px-5 py-6">
         {tab === 'ask' && models.length > 0 && (
-          <AskView models={models} model={model} setModel={setModel} rate={rate} onUnauth={unauth} />
+          <AskView
+            models={models}
+            model={model}
+            setModel={setModel}
+            reasoning={reasoning}
+            setReasoning={setReasoning}
+            reasoningLevels={reasoningLevels}
+            rate={rate}
+            maxTokens={maxTokens}
+            settings={settings}
+            onUnauth={unauth}
+          />
         )}
         {tab === 'history' && <HistoryView rate={rate} onUnauth={unauth} />}
+        {tab === 'settings' && <SettingsView settings={settings} setSettings={setSettings} />}
       </main>
     </div>
   );

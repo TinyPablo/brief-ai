@@ -4,6 +4,7 @@ import re
 import secrets
 import threading
 import time
+import traceback
 from datetime import timedelta
 from functools import wraps
 
@@ -65,6 +66,11 @@ DEFAULT_MODEL = "gemini-3.1-flash-lite"
 
 MAX_TOKENS = 4096
 LOGIN_COOLDOWN = 3.0
+
+# Unified reasoning levels, mapped per provider (Anthropic effort / Gemini
+# thinking_level). Default is the fastest level.
+REASONING_LEVELS = ["low", "medium", "high", "max"]
+DEFAULT_REASONING = "low"
 
 # Per-prompt price estimate assumptions, converted to PLN with a fixed rate.
 ESTIMATE_INPUT_TOKENS = 1000
@@ -146,7 +152,7 @@ def require_auth(view):
     return wrapper
 
 
-def call_anthropic(model, prompt):
+def call_anthropic(model, prompt, reasoning):
     cfg = MODELS[model]
     kwargs = dict(
         model=model,
@@ -154,8 +160,8 @@ def call_anthropic(model, prompt):
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],
     )
-    if cfg.get("effort"):
-        kwargs["output_config"] = {"effort": "medium"}
+    if cfg.get("effort") and reasoning in REASONING_LEVELS:
+        kwargs["output_config"] = {"effort": reasoning}
 
     if model == "claude-fable-5":
         try:
@@ -186,17 +192,30 @@ def call_anthropic(model, prompt):
     }
 
 
-def call_gemini(model, prompt):
+def build_gemini_thinking(reasoning):
+    level = {"low": "low", "medium": "medium", "high": "high", "max": "high"}.get(reasoning)
+    if not level:
+        return None
+    try:
+        return genai_types.ThinkingConfig(thinking_level=level)
+    except Exception:
+        return None
+
+
+def call_gemini(model, prompt, reasoning):
     if gemini_client is None:
         raise RuntimeError("GEMINI_API_KEY is not configured")
+
+    config_args = dict(system_instruction=SYSTEM_PROMPT, max_output_tokens=MAX_TOKENS)
+    if model.startswith("gemini-3"):
+        thinking = build_gemini_thinking(reasoning)
+        if thinking is not None:
+            config_args["thinking_config"] = thinking
 
     resp = gemini_client.models.generate_content(
         model=model,
         contents=prompt,
-        config=genai_types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-            max_output_tokens=MAX_TOKENS,
-        ),
+        config=genai_types.GenerateContentConfig(**config_args),
     )
 
     try:
@@ -267,14 +286,28 @@ def config():
     models = []
     for model_id in MODEL_ORDER:
         cfg = MODELS[model_id]
+        supports_reasoning = (
+            (cfg["provider"] == "anthropic" and cfg.get("effort"))
+            or (cfg["provider"] == "google" and model_id.startswith("gemini-3"))
+        )
         models.append({
             "id": model_id,
             "label": cfg["label"],
             "provider": cfg["provider"],
             "provider_label": PROVIDER_LABELS[cfg["provider"]],
+            "input": cfg["input"],
+            "output": cfg["output"],
+            "reasoning": bool(supports_reasoning),
             "est_pln": estimate_pln(cfg),
         })
-    return jsonify(models=models, default=DEFAULT_MODEL, usd_pln=USD_TO_PLN)
+    return jsonify(
+        models=models,
+        default=DEFAULT_MODEL,
+        usd_pln=USD_TO_PLN,
+        max_tokens=MAX_TOKENS,
+        reasoning_levels=[{"value": lvl, "label": lvl.capitalize()} for lvl in REASONING_LEVELS],
+        default_reasoning=DEFAULT_REASONING,
+    )
 
 
 @app.post("/api/generate")
@@ -288,14 +321,19 @@ def generate():
     if not prompt:
         return jsonify(error="empty_prompt"), 400
 
+    reasoning = data.get("reasoning", DEFAULT_REASONING)
+    if reasoning not in REASONING_LEVELS:
+        reasoning = DEFAULT_REASONING
+
     provider = MODELS[model]["provider"]
     start = time.perf_counter()
     try:
         if provider == "google":
-            result = call_gemini(model, prompt)
+            result = call_gemini(model, prompt, reasoning)
         else:
-            result = call_anthropic(model, prompt)
+            result = call_anthropic(model, prompt, reasoning)
     except Exception as exc:  # surface API/network errors to the client
+        traceback.print_exc()
         return jsonify(error="api_error", detail=str(exc)), 502
     duration_ms = int((time.perf_counter() - start) * 1000)
 

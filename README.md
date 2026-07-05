@@ -17,6 +17,9 @@ session, so you log in once and stay in across tabs.
 - Model picker grouped by provider — **Anthropic** (Haiku 4.5, Sonnet 4.6, Opus 4.8, Fable 5)
   and **Google Gemini** (2.5 Flash Lite, 3.1 Flash Lite, 3.5 Flash, 3.1 Pro), each showing a
   per-prompt price estimate.
+- Unified reasoning selector (Low–Max) mapped to Anthropic effort / Gemini thinking level.
+- Optional prompt context (date, location, personal data) toggled in Settings and stored in the browser.
+- Live cost estimate from the prompt length before sending.
 - Rendered Markdown answers with LaTeX math, syntax-highlighted code, and per-block copy buttons.
 - Shows generation time, input/output tokens, and price (in PLN) per prompt.
 - Prompt history stored in PostgreSQL and browsable in-app.

@@ -85,8 +85,8 @@ intentionally not committed.
 - `POST /api/login` `{pin}` → `{ok}` / `401` / `429 {retry_after}`
 - `GET  /api/session` → `{authenticated}`
 - `POST /api/logout` → `{ok}`
-- `GET  /api/config` → `{models:[{id,label,provider,provider_label,est_pln}], default, usd_pln}` *(auth)*
-- `POST /api/generate` `{model, prompt}` → answer + tokens + cost + duration *(auth)*
+- `GET  /api/config` → `{models:[{id,label,provider,provider_label,input,output,reasoning,est_pln}], default, usd_pln, max_tokens, reasoning_levels, default_reasoning}` *(auth)*
+- `POST /api/generate` `{model, prompt, reasoning}` → answer + tokens + cost + duration *(auth)*
 - `GET  /api/history` → last 100 rows (preview) *(auth)*
 - `GET  /api/history/:id` → full row *(auth)*
 - `GET  /api/health` → `{ok}`
@@ -123,6 +123,42 @@ Notes:
   (which may be the fallback) is what gets priced and stored.
 - Anthropic refusals (`stop_reason == "refusal"`) and empty/blocked Gemini
   responses are surfaced as a short note.
+
+## Reasoning level
+
+One unified "Reasoning" control (`low` / `medium` / `high` / `max`, default `low`
+= fastest) maps per provider in the backend:
+
+- **Anthropic** (Sonnet 4.6, Opus 4.8, Fable 5): `output_config.effort`. Haiku 4.5
+  has no effort, so the control is a no-op there.
+- **Gemini** (3.x only): `thinking_config.thinking_level` (`max` → `high`). Applied
+  only to `gemini-3*` models and built defensively (if the SDK/model rejects it, no
+  thinking config is sent). Gemini 2.5 keeps its native default (thinking off).
+
+`/api/config` exposes `reasoning` (bool, whether the control applies) per model plus
+`reasoning_levels` / `default_reasoning`. The frontend disables the dropdown when the
+selected model's `reasoning` is false.
+
+## Prompt context (client-side settings)
+
+The Settings tab stores a small object in the browser (`localStorage`, key
+`briefai_settings`) and the frontend prepends context lines above the prompt before
+sending. Nothing about this is server-side; the composed text is what gets stored in
+history.
+
+- `today is <date>` — from the browser clock; optional time + IANA timezone.
+- `user is currently in <text>` — editable location (default "Bielsko-Biała").
+- `user data: <text>` — free-form personal context (default off).
+
+Composition: `<context>\n\n` + optional `very brief: ` (Brief button) + the prompt.
+Each part is independently toggleable; all off → just the raw prompt.
+
+## Live cost estimate
+
+Shown next to the input as `est. ~X zł`. Input tokens ≈ composed-text length / 4;
+output assumed 1.5× input, capped at `max_tokens`. Priced from the model's per-1M
+rates × `USD_TO_PLN`. Thinking/effort overhead is not modelled — it's a rough guide
+(the exact cost is shown after the answer).
 
 ## Adding more providers
 
