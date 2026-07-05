@@ -303,25 +303,26 @@ def logout():
 def config():
     effort_options = [{"value": v, "label": v.capitalize()} for v in EFFORT_LEVELS]
     gemini_effort_options = [{"value": v, "label": v.capitalize()} for v in GEMINI_EFFORT_LEVELS]
-    thinking_options = [{"value": "off", "label": "Off"}, {"value": "on", "label": "On"}]
 
     models = []
     for model_id in MODEL_ORDER:
         cfg = MODELS[model_id]
-        controls = []
-        fixed = []
         if cfg["provider"] == "anthropic":
             if cfg.get("effort"):
-                controls.append({"id": "effort", "label": "Effort", "options": effort_options, "default": "low"})
+                effort_ctl = {"available": True, "options": effort_options, "default": "low"}
                 if model_id == "claude-fable-5":
-                    fixed.append({"label": "Thinking", "value": "On"})
+                    thinking_ctl = {"available": False, "value": "on"}
                 else:
-                    controls.append({"id": "thinking", "label": "Thinking", "options": thinking_options, "default": "off"})
+                    thinking_ctl = {"available": True, "default": "off"}
+            else:
+                effort_ctl = {"available": False, "value": "—"}
+                thinking_ctl = {"available": False, "value": "off"}
         else:
             if model_id.startswith("gemini-3"):
-                controls.append({"id": "effort", "label": "Effort", "options": gemini_effort_options, "default": "low"})
+                effort_ctl = {"available": True, "options": gemini_effort_options, "default": "low"}
             else:
-                fixed.append({"label": "Effort", "value": "Off"})
+                effort_ctl = {"available": False, "value": "Off"}
+            thinking_ctl = {"available": False, "value": "off"}
         models.append({
             "id": model_id,
             "label": cfg["label"],
@@ -329,8 +330,8 @@ def config():
             "provider_label": PROVIDER_LABELS[cfg["provider"]],
             "input": cfg["input"],
             "output": cfg["output"],
-            "controls": controls,
-            "fixed": fixed,
+            "effort": effort_ctl,
+            "thinking": thinking_ctl,
             "est_pln": estimate_pln(cfg),
         })
     return jsonify(

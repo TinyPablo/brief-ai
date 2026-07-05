@@ -253,11 +253,38 @@ function groupByProvider(models) {
   return groups;
 }
 
+function Switch({ checked, disabled, onChange }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={() => { if (!disabled) onChange(!checked); }}
+      className={
+        'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors '
+        + (checked ? 'bg-accent' : 'bg-edge')
+        + (disabled ? ' opacity-60 cursor-not-allowed' : ' cursor-pointer')
+      }
+    >
+      <span
+        className={
+          'inline-block h-4 w-4 rounded-full bg-white transition-transform '
+          + (checked ? 'translate-x-4' : 'translate-x-0.5')
+        }
+      />
+    </button>
+  );
+}
+
 function AskView({ models, model, setModel, effort, setEffort, thinking, setThinking, rate, maxTokens, settings, onUnauth }) {
   const groups = useMemo(() => groupByProvider(models), [models]);
   const currentModel = models.find((m) => m.id === model) || null;
-  const controls = currentModel ? (currentModel.controls || []) : [];
-  const fixed = currentModel ? (currentModel.fixed || []) : [];
+  const effortCtl = currentModel ? currentModel.effort : null;
+  const thinkingCtl = currentModel ? currentModel.thinking : null;
+  const thinkingChecked = thinkingCtl
+    ? (thinkingCtl.available ? thinking === 'on' : thinkingCtl.value === 'on')
+    : false;
   const [prompt, setPrompt] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
@@ -335,61 +362,66 @@ function AskView({ models, model, setModel, effort, setEffort, thinking, setThin
 
   return (
     <div className="space-y-4">
-      <div className="bg-panel border border-edge rounded-2xl p-1.5 focus-within:border-accent/60 transition-colors">
+      <div className="bg-panel border border-edge rounded-2xl focus-within:border-accent/60 transition-colors">
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={onKeyDown}
           placeholder="Ask anything…"
-          rows={4}
-          className="w-full bg-transparent resize-y outline-none px-3.5 py-3 text-[0.95rem] placeholder:text-muted/70 min-h-[7rem]"
+          rows={3}
+          className="w-full bg-transparent resize-y outline-none px-3.5 pt-3 pb-1 text-[0.95rem] placeholder:text-muted/70 min-h-[4.5rem]"
         />
-        <div className="flex flex-wrap items-center justify-between gap-2 px-2.5 pb-1.5 pt-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <select
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              className="bg-panel2 border border-edge rounded-lg text-sm px-2.5 py-1.5 outline-none hover:border-accent/50 transition cursor-pointer"
-            >
-              {groups.map((g) => (
-                <optgroup key={g.label} label={g.label}>
-                  {g.items.map((m) => (
-                    <option key={m.id} value={m.id}>{m.label} · ~{zl(m.est_pln)}</option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
 
-            {controls.map((c) => {
-              const value = c.id === 'effort' ? effort : thinking;
-              const setValue = c.id === 'effort' ? setEffort : setThinking;
-              return (
-                <label key={c.id} className="flex items-center gap-1.5 text-xs text-muted">
-                  {c.label}
-                  <select
-                    value={value}
-                    onChange={(e) => setValue(e.target.value)}
-                    className="bg-panel2 border border-edge rounded-lg text-sm px-2 py-1.5 outline-none hover:border-accent/50 transition cursor-pointer"
-                  >
-                    {c.options.map((o) => (
-                      <option key={o.value} value={o.value}>{o.label}</option>
-                    ))}
-                  </select>
-                </label>
-              );
-            })}
-
-            {fixed.map((f, i) => (
-              <span key={i} className="text-xs text-muted/70 border border-edge rounded-lg px-2 py-1.5">
-                {f.label}: {f.value}
-              </span>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 pt-1">
+          <select
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            className="bg-panel2 border border-edge rounded-lg text-sm px-2.5 py-1.5 outline-none hover:border-accent/50 transition cursor-pointer"
+          >
+            {groups.map((g) => (
+              <optgroup key={g.label} label={g.label}>
+                {g.items.map((m) => (
+                  <option key={m.id} value={m.id}>{m.label} · ~{zl(m.est_pln)}</option>
+                ))}
+              </optgroup>
             ))}
+          </select>
 
-            {controls.length === 0 && fixed.length === 0 && (
-              <span className="text-xs text-muted/70 border border-edge rounded-lg px-2 py-1.5">Default</span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs text-muted">Effort</span>
+            {effortCtl && effortCtl.available ? (
+              <select
+                value={effort}
+                onChange={(e) => setEffort(e.target.value)}
+                className="bg-panel2 border border-edge rounded-lg text-sm px-2 py-1 outline-none hover:border-accent/50 transition cursor-pointer"
+              >
+                {effortCtl.options.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            ) : (
+              <span className="text-sm text-muted/80 bg-panel2 border border-edge rounded-lg px-2 py-1">
+                {effortCtl ? effortCtl.value : '—'}
+              </span>
             )}
           </div>
 
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs text-muted">Thinking</span>
+            <Switch
+              checked={thinkingChecked}
+              disabled={!thinkingCtl || !thinkingCtl.available}
+              onChange={(v) => setThinking(v ? 'on' : 'off')}
+            />
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between gap-2 px-3 py-2.5">
+          <span className="text-xs text-muted/70 truncate">
+            {estimate != null
+              ? 'est. ~' + zl(estimate)
+              : (navigator.platform.includes('Mac') ? '⌘ + ↵ to send' : 'Ctrl + ↵ to send')}
+          </span>
           <div className="flex items-center gap-2">
             <button
               onClick={clearAll}
@@ -416,14 +448,6 @@ function AskView({ models, model, setModel, effort, setEffort, thinking, setThin
             </button>
           </div>
         </div>
-      </div>
-
-      <div className="flex items-center justify-between gap-2 px-1 text-xs text-muted/70">
-        <span>
-          Press <kbd className="font-mono">{navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'}</kbd>
-          {' '}+ <kbd className="font-mono">↵</kbd> to send
-        </span>
-        {estimate != null && <span>est. ~{zl(estimate)}</span>}
       </div>
 
       {loading && (
@@ -806,10 +830,8 @@ function Main({ onLogout }) {
   useEffect(() => {
     const m = models.find((x) => x.id === model);
     if (!m) return;
-    const ef = (m.controls || []).find((c) => c.id === 'effort');
-    const th = (m.controls || []).find((c) => c.id === 'thinking');
-    setEffort(ef ? ef.default : 'low');
-    setThinking(th ? th.default : 'off');
+    setEffort(m.effort && m.effort.available ? m.effort.default : 'low');
+    setThinking(m.thinking && m.thinking.available ? m.thinking.default : (m.thinking ? m.thinking.value : 'off'));
   }, [model, models]);
 
   useEffect(() => {

@@ -86,7 +86,7 @@ intentionally not committed.
 - `POST /api/login` `{pin}` → `{ok}` / `401` / `429 {retry_after}`
 - `GET  /api/session` → `{authenticated}`
 - `POST /api/logout` → `{ok}`
-- `GET  /api/config` → `{models:[{id,label,provider,provider_label,input,output,controls,fixed,est_pln}], default, usd_pln, max_tokens}` *(auth)*
+- `GET  /api/config` → `{models:[{id,label,provider,provider_label,input,output,effort,thinking,est_pln}], default, usd_pln, max_tokens}` *(auth)*
 - `POST /api/generate` `{model, prompt, effort, thinking}` → answer + tokens + cost + duration *(auth)*
 - `GET  /api/history?q=&before=` → page of rows (preview, 30 per page, newest first); `q`
   filters prompt+answer (ILIKE), `before` is an id cursor for infinite scroll *(auth)*
@@ -128,9 +128,11 @@ Notes:
 
 ## Reasoning controls (per model)
 
-`/api/config` returns per-model `controls` (interactive dropdowns) and `fixed`
-(read-only labels). The frontend renders whatever the model exposes; defaults are
-always the lowest. `/api/generate` takes `effort` and `thinking`.
+`/api/config` returns per-model `effort` and `thinking` descriptors, each with an
+`available` flag. The UI always shows an Effort control (dropdown when available,
+read-only value otherwise) and a Thinking switch (interactive when available, locked
+to its fixed value otherwise). Defaults are always the lowest. `/api/generate` takes
+`effort` and `thinking`.
 
 - **Anthropic Sonnet 4.6 / Opus 4.8**: `Effort` (low/medium/high/max, default low →
   `output_config.effort`) + `Thinking` (off/on, default off → `thinking:
