@@ -157,14 +157,14 @@ function Login({ onSuccess }) {
     setBusy(true);
     setError('');
     try {
-      const res = await api('/login', { method: 'POST', body: JSON.stringify({ pin: code }) });
+      const res = await api('/login', { method: 'POST', body: JSON.stringify({ code }) });
       if (res.ok) { onSuccess(); return; }
       const data = await res.json().catch(() => ({}));
       if (res.status === 429) {
         setCooldown(data.retry_after || 3);
-        setError('Too many attempts — wait a moment.');
+        setError('Too many attempts - wait a moment.');
       } else {
-        setError('Incorrect PIN.');
+        setError('Incorrect code.');
       }
       setDigits(['', '', '', '', '', '']);
       refs.current[0] && refs.current[0].focus();
@@ -211,7 +211,7 @@ function Login({ onSuccess }) {
           <h1 className="text-2xl font-bold tracking-tight">
             Brief<span className="text-accent">AI</span>
           </h1>
-          <p className="text-muted text-sm mt-1">Enter your PIN to continue</p>
+          <p className="text-muted text-sm mt-1">Enter your authenticator code to continue</p>
         </div>
 
         <div className="flex justify-center gap-2.5 mb-4" onPaste={onPaste}>
@@ -401,7 +401,7 @@ function AskView({ models, model, setModel, effort, setEffort, thinking, setThin
               </select>
             ) : (
               <span className="text-sm text-muted/80 bg-panel2 border border-edge rounded-lg px-2 py-1">
-                {effortCtl ? effortCtl.value : '—'}
+                {effortCtl ? effortCtl.value : '-'}
               </span>
             )}
           </div>
@@ -536,7 +536,7 @@ function weekLabel(d) {
   const e = new Date(s);
   e.setDate(s.getDate() + 6);
   return s.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
-    + ' – ' + e.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+    + ' - ' + e.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
 function groupHistory(items) {

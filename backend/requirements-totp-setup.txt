@@ -1,0 +1,4 @@
+# Only needed locally to run generate_totp_secret.py - not part of the
+# deployed image (see requirements.txt).
+pyotp==2.9.0
+qrcode==7.4.2

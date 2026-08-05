@@ -2,35 +2,36 @@
 
 Brief AI delivers quick, clear answers with fast models and a simple interface.
 
-One prompt in, one answer out — no chat threads. Every prompt and answer is
+One prompt in, one answer out - no chat threads. Every prompt and answer is
 stored with its model, timing, token usage, and price, so you can browse the full
-history later. The whole thing sits behind a 6-digit PIN with a persistent
-session, so you log in once and stay in across tabs.
+history later. The whole thing sits behind Google Authenticator (TOTP) login with a
+persistent session, so you log in once and stay in across tabs.
 
 > Bootstrapped with Claude Opus 4.8.
 
 ## Features
 
 - Dark, lightweight single-page interface.
-- 6-digit PIN login with a persistent session cookie.
-- Brute-force protection: 3-second server-side cooldown per login attempt.
-- Model picker grouped by provider — **Anthropic** (Haiku 4.5, Sonnet 4.6, Opus 4.8, Fable 5)
+- Google Authenticator (TOTP) login with a persistent session cookie.
+- Brute-force protection: 3-second server-side cooldown per attempt, plus a 5-minute
+  lockout after 5 consecutive failures.
+- Model picker grouped by provider - **Anthropic** (Haiku 4.5, Sonnet 4.6, Opus 4.8, Fable 5)
   and **Google Gemini** (2.5 Flash Lite, 3.1 Flash Lite, 3.5 Flash), each showing a
   per-prompt price estimate.
-- Unified reasoning selector (Low–Max) mapped to Anthropic effort / Gemini thinking level.
+- Unified reasoning selector (Low-Max) mapped to Anthropic effort / Gemini thinking level.
 - Optional prompt context (date, location, personal data) toggled in Settings and stored in the browser.
 - Live cost estimate from the prompt length before sending.
 - Rendered Markdown answers with LaTeX math, syntax-highlighted code, and per-block copy buttons.
 - Shows generation time, input/output tokens, and price (in PLN) per prompt.
-- Prompt history stored in PostgreSQL — grouped by week/day (collapsible), full-text
+- Prompt history stored in PostgreSQL - grouped by week/day (collapsible), full-text
   search, infinite scroll, and per-conversation delete.
 
 ## Stack
 
-- **Frontend** — React + Tailwind (loaded from CDN, no build step), served by nginx.
-- **Backend** — Python / Flask + gunicorn, talking to the Anthropic API.
-- **Database** — PostgreSQL.
-- **Orchestration** — Docker Compose.
+- **Frontend** - React + Tailwind (loaded from CDN, no build step), served by nginx.
+- **Backend** - Python / Flask + gunicorn, talking to the Anthropic API.
+- **Database** - PostgreSQL.
+- **Orchestration** - Docker Compose.
 
 ## Configuration
 
@@ -44,7 +45,7 @@ Then edit `.env`:
 |---------------------|-----------------------------------------------------------------|
 | `ANTHROPIC_API_KEY` | Your Anthropic API key.                                         |
 | `GEMINI_API_KEY`    | Your Google AI Studio API key.                                 |
-| `APP_PIN`           | The 6-digit login PIN.                                          |
+| `TOTP_SECRET`       | Secret for Google Authenticator login (see below).              |
 | `SECRET_KEY`        | Long random string for signing session cookies.                |
 | `COOKIE_SECURE`     | `true` in production (https); `false` only for local http tests.|
 | `POSTGRES_*`        | Database name, user, and password.                             |
@@ -55,6 +56,22 @@ Generate a secret key with:
 python -c "import secrets; print(secrets.token_hex(32))"
 ```
 
+### Enrolling Google Authenticator
+
+Run this **locally**, not on the deploy server, so the secret and QR code
+never travel over the network:
+
+```bash
+pip install -r backend/requirements-totp-setup.txt
+python backend/generate_totp_secret.py
+```
+
+Scan the printed QR code with Google Authenticator (or any TOTP app), then
+paste the printed `TOTP_SECRET=...` line into your `.env`.
+
+If you lose your phone, SSH into the server and rerun the steps above to
+generate a new secret, then update `.env` and restart the backend.
+
 ## Run
 
 ```bash
@@ -62,7 +79,7 @@ docker compose up -d --build
 ```
 
 The app is published on `127.0.0.1:8790`. The backend and database are not exposed
-to the host — only the frontend, which proxies API calls internally.
+to the host - only the frontend, which proxies API calls internally.
 
 ## Deploy
 

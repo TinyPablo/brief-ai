@@ -1,4 +1,3 @@
-import hmac
 import os
 import re
 import secrets
@@ -10,14 +9,19 @@ from functools import wraps
 
 import psycopg2
 import psycopg2.extras
+import pyotp
 from anthropic import Anthropic
 from flask import Flask, jsonify, request, session
 from google import genai
 from google.genai import types as genai_types
 
-APP_PIN = os.environ.get("APP_PIN", "")
-if not re.fullmatch(r"\d{6}", APP_PIN):
-    raise RuntimeError("APP_PIN must be a 6-digit number (set it in .env)")
+TOTP_SECRET = os.environ.get("TOTP_SECRET", "")
+if not re.fullmatch(r"[A-Z2-7]+=*", TOTP_SECRET):
+    raise RuntimeError(
+        "TOTP_SECRET must be a base32 secret (set it in .env - "
+        "run backend/generate_totp_secret.py locally to create one)"
+    )
+totp = pyotp.TOTP(TOTP_SECRET)
 
 SECRET_KEY = os.environ.get("SECRET_KEY")
 if not SECRET_KEY:
@@ -64,6 +68,8 @@ DEFAULT_MODEL = "gemini-3.1-flash-lite"
 
 MAX_TOKENS = 4096
 LOGIN_COOLDOWN = 3.0
+LOGIN_MAX_FAILURES = 5
+LOGIN_LOCKOUT_SECONDS = 5 * 60
 
 # Effort levels. Anthropic effort-capable models accept all of them; Gemini 3.x
 # maps effort to thinking_level (low/medium/high). Default is the fastest.
@@ -103,6 +109,8 @@ app.config.update(
 
 _login_lock = threading.Lock()
 _last_attempt = {}
+_login_failures = {}  # ip -> (count, locked_until_monotonic)
+_last_used_step = None  # last accepted TOTP time-step, to reject replay
 
 
 def get_db():
@@ -270,21 +278,43 @@ def health():
 
 @app.post("/api/login")
 def login():
+    global _last_used_step
     ip = client_ip()
     now = time.monotonic()
     with _login_lock:
+        count, locked_until = _login_failures.get(ip, (0, 0))
+        if now < locked_until:
+            return jsonify(error="too_many_attempts", retry_after=round(locked_until - now, 1)), 429
+
         wait = LOGIN_COOLDOWN - (now - _last_attempt.get(ip, 0))
         if wait > 0:
             return jsonify(error="too_many_attempts", retry_after=round(wait, 1)), 429
         _last_attempt[ip] = now
 
     data = request.get_json(silent=True) or {}
-    pin = str(data.get("pin", ""))
-    if hmac.compare_digest(pin, APP_PIN):
+    code = str(data.get("code", ""))
+    step = int(time.time()) // 30
+    valid = (
+        re.fullmatch(r"\d{6}", code)
+        and totp.verify(code, valid_window=1)
+        and step != _last_used_step
+    )
+
+    with _login_lock:
+        if valid:
+            _login_failures.pop(ip, None)
+            _last_used_step = step
+        else:
+            count, _ = _login_failures.get(ip, (0, 0))
+            count += 1
+            locked_until = now + LOGIN_LOCKOUT_SECONDS if count >= LOGIN_MAX_FAILURES else 0
+            _login_failures[ip] = (count, locked_until)
+
+    if valid:
         session.permanent = True
         session["auth"] = True
         return jsonify(ok=True)
-    return jsonify(error="invalid_pin"), 401
+    return jsonify(error="invalid_code"), 401
 
 
 @app.get("/api/session")
@@ -315,7 +345,7 @@ def config():
                 else:
                     thinking_ctl = {"available": True, "default": "off"}
             else:
-                effort_ctl = {"available": False, "value": "—"}
+                effort_ctl = {"available": False, "value": "-"}
                 thinking_ctl = {"available": False, "value": "off"}
         else:
             if model_id.startswith("gemini-3"):
