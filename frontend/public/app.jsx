@@ -117,18 +117,18 @@ function Markdown({ text }) {
 
 function Meta({ result, rate, onCopy, copied }) {
   return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted border-b border-edge pb-3 mb-4">
-      <span className="text-accent2 font-medium">{result.model_label}</span>
-      {result.reasoning && <span>{result.reasoning}</span>}
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[11px] text-muted border-b border-edge pb-3 mb-4">
+      <span className="text-accent font-bold">{result.model_label}</span>
+      {result.reasoning && <span>{result.reasoning.toLowerCase()}</span>}
       <span>{fmtDuration(result.duration_ms)}</span>
-      <span>{result.input_tokens.toLocaleString()} in / {result.output_tokens.toLocaleString()} out</span>
-      <span>{zl(result.cost_usd * rate)}</span>
+      <span>{result.input_tokens.toLocaleString()}/{result.output_tokens.toLocaleString()} tok</span>
+      <span className="glow text-accent">{zl(result.cost_usd * rate)}</span>
       {onCopy && (
         <button
           onClick={onCopy}
-          className="ml-auto text-muted hover:text-white transition-colors"
+          className="ml-auto text-muted hover:text-white transition-colors underline underline-offset-2"
         >
-          {copied ? 'Copied' : 'Copy'}
+          {copied ? 'copied' : 'copy'}
         </button>
       )}
     </div>
@@ -208,8 +208,8 @@ function Login({ onSuccess }) {
     <div className="min-h-screen grid place-items-center px-6">
       <div className="w-full max-w-sm fade-in">
         <div className="text-center mb-8">
-          <h1 className="text-2xl font-bold tracking-tight">
-            Brief<span className="text-accent">AI</span>
+          <h1 className="text-2xl font-mono font-bold tracking-tight">
+            brief_ai<span className="text-accent glow">$</span>
           </h1>
           <p className="text-muted text-sm mt-1">Enter your authenticator code to continue</p>
         </div>
@@ -254,40 +254,100 @@ function groupByProvider(models) {
 }
 
 function Switch({ checked, disabled, onChange }) {
-  return (
+  const seg = (active, label, value) => (
     <button
       type="button"
-      role="switch"
-      aria-checked={checked}
       disabled={disabled}
-      onClick={() => { if (!disabled) onChange(!checked); }}
+      onClick={() => { if (!disabled) onChange(value); }}
       className={
-        'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors '
-        + (checked ? 'bg-accent' : 'bg-edge')
-        + (disabled ? ' opacity-60 cursor-not-allowed' : ' cursor-pointer')
+        'font-mono text-[11px] px-2.5 py-1 transition-colors '
+        + (active ? 'bg-accent text-accentInk font-bold' : 'text-muted hover:text-white')
+        + (disabled ? ' opacity-50 cursor-not-allowed' : ' cursor-pointer')
       }
     >
-      <span
-        className={
-          'inline-block h-4 w-4 rounded-full bg-white transition-transform '
-          + (checked ? 'translate-x-4' : 'translate-x-0.5')
-        }
-      />
+      {label}
     </button>
+  );
+  return (
+    <div role="switch" aria-checked={checked} className="inline-flex items-center border border-edge rounded overflow-hidden shrink-0">
+      {seg(!checked, 'low', false)}
+      {seg(checked, 'max', true)}
+    </div>
   );
 }
 
-function AskView({ models, model, setModel, depth, setDepth, rate, maxTokens, settings, onUnauth }) {
+const IMAGE_TOKEN_TILE_PX = 28;
+
+function imageTokenEstimate(width, height) {
+  return Math.ceil(width / IMAGE_TOKEN_TILE_PX) * Math.ceil(height / IMAGE_TOKEN_TILE_PX);
+}
+
+function readImageFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error || new Error('read_failed'));
+    reader.onload = () => {
+      const dataUrl = reader.result;
+      const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
+      const finish = (width, height) => resolve({
+        id: Math.random().toString(36).slice(2),
+        base64,
+        mediaType: file.type,
+        sizeBytes: file.size,
+        previewUrl: dataUrl,
+        width,
+        height,
+      });
+      const img = new Image();
+      img.onload = () => finish(img.naturalWidth || 1000, img.naturalHeight || 1000);
+      img.onerror = () => finish(1000, 1000); // rough fallback if decoding fails
+      img.src = dataUrl;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function ImageThumb({ image, onRemove }) {
+  return (
+    <div className="flex flex-col items-center gap-1">
+      <div className="relative w-[52px] h-[52px] border border-edge bg-panel2 overflow-hidden">
+        <img src={image.previewUrl} alt="" className="w-full h-full object-cover" />
+        <button
+          type="button"
+          onClick={() => onRemove(image.id)}
+          title="Remove"
+          className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-ink border-l border-b border-edge flex items-center justify-center text-muted hover:text-white"
+        >
+          <svg width="8" height="8" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.6"><path d="M6 6l12 12M18 6L6 18" /></svg>
+        </button>
+      </div>
+      <span className="font-mono text-[9px] text-muted/70">{(image.sizeBytes / 1e6).toFixed(1)}mb</span>
+    </div>
+  );
+}
+
+const DEFAULT_IMAGE_LIMITS = {
+  max_images: 20,
+  max_image_mb: 10,
+  max_total_mb: 24,
+  allowed_types: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
+};
+
+function AskView({ models, model, setModel, depth, setDepth, rate, imageLimits, settings, onUnauth }) {
+  const limits = imageLimits || DEFAULT_IMAGE_LIMITS;
   const groups = useMemo(() => groupByProvider(models), [models]);
   const currentModel = models.find((m) => m.id === model) || null;
   const depthCtl = currentModel ? currentModel.depth : null;
   const [prompt, setPrompt] = useState('');
+  const [images, setImages] = useState([]);
+  const [imageError, setImageError] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
   const [elapsed, setElapsed] = useState(0);
   const [copied, setCopied] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     if (!loading) return;
@@ -297,17 +357,70 @@ function AskView({ models, model, setModel, depth, setDepth, rate, maxTokens, se
     return () => clearInterval(t);
   }, [loading]);
 
+  const totalImageBytes = useMemo(() => images.reduce((s, im) => s + im.sizeBytes, 0), [images]);
+  const imagesTokenTotal = useMemo(
+    () => images.reduce((s, im) => s + imageTokenEstimate(im.width, im.height), 0),
+    [images],
+  );
+  const overLimit = images.length > limits.max_images || totalImageBytes > limits.max_total_mb * 1e6;
+
+  const addFiles = async (fileList) => {
+    const files = Array.from(fileList || []).filter((f) => limits.allowed_types.includes(f.type));
+    if (!files.length) return;
+    let entries;
+    try {
+      entries = await Promise.all(files.map(readImageFile));
+    } catch (e) {
+      setImageError('Could not read one of the files.');
+      return;
+    }
+    const oversized = entries.find((e) => e.sizeBytes > limits.max_image_mb * 1e6);
+    if (oversized) {
+      setImageError(`One image is ${(oversized.sizeBytes / 1e6).toFixed(1)}MB, max is ${limits.max_image_mb}MB per image.`);
+      return;
+    }
+    setImages((prev) => {
+      const next = [...prev, ...entries];
+      const nextBytes = next.reduce((s, im) => s + im.sizeBytes, 0);
+      if (next.length > limits.max_images || nextBytes > limits.max_total_mb * 1e6) {
+        setImageError(
+          `img ${next.length}/${limits.max_images} · ${(nextBytes / 1e6).toFixed(1)}/${limits.max_total_mb}mb `
+          + '- remove an image to continue.'
+        );
+        return prev;
+      }
+      setImageError('');
+      return next;
+    });
+  };
+
+  const removeImage = (id) => {
+    setImageError('');
+    setImages((prev) => prev.filter((i) => i.id !== id));
+  };
+
+  const onDrop = (e) => {
+    e.preventDefault();
+    if (e.dataTransfer && e.dataTransfer.files) addFiles(e.dataTransfer.files);
+  };
+  const onDragOver = (e) => e.preventDefault();
+
+  const onTextareaPaste = (e) => {
+    const items = Array.from(e.clipboardData ? e.clipboardData.items : []);
+    const files = items.filter((it) => it.type.startsWith('image/')).map((it) => it.getAsFile()).filter(Boolean);
+    if (files.length) addFiles(files);
+  };
+
   const estimate = useMemo(() => {
-    if (!currentModel || !prompt.trim()) return null;
+    if (!currentModel) return null;
     const composed = composePrompt(prompt, settings, false);
-    const inTok = Math.ceil(composed.length / 4);
-    const outTok = Math.min(Math.round(inTok * 1.5), maxTokens);
-    const usd = inTok / 1e6 * currentModel.input + outTok / 1e6 * currentModel.output;
-    return usd * rate;
-  }, [prompt, currentModel, settings, maxTokens, rate]);
+    if (!composed.trim() && images.length === 0) return null;
+    const inTok = Math.ceil(composed.length / 4) + imagesTokenTotal;
+    return (inTok / 1e6 * currentModel.input) * rate;
+  }, [prompt, currentModel, settings, imagesTokenTotal, rate, images.length]);
 
   const doSend = async (brief) => {
-    if (!prompt.trim() || loading) return;
+    if (!prompt.trim() || loading || overLimit) return;
     const text = composePrompt(prompt, settings, brief);
     setLoading(true);
     setResult(null);
@@ -316,7 +429,12 @@ function AskView({ models, model, setModel, depth, setDepth, rate, maxTokens, se
     try {
       const res = await api('/generate', {
         method: 'POST',
-        body: JSON.stringify({ model, prompt: text, depth }),
+        body: JSON.stringify({
+          model,
+          prompt: text,
+          depth,
+          ...(images.length ? { images: images.map((im) => ({ data: im.base64, media_type: im.mediaType })) } : {}),
+        }),
       });
       if (res.status === 401) { onUnauth(); return; }
       const data = await res.json().catch(() => ({}));
@@ -336,6 +454,8 @@ function AskView({ models, model, setModel, depth, setDepth, rate, maxTokens, se
 
   const clearAll = () => {
     setPrompt('');
+    setImages([]);
+    setImageError('');
     setResult(null);
     setError('');
     setCopied(false);
@@ -356,23 +476,42 @@ function AskView({ models, model, setModel, depth, setDepth, rate, maxTokens, se
     });
   };
 
+  const sendDisabled = loading || !prompt.trim() || overLimit;
+
   return (
     <div className="space-y-4">
-      <div className="bg-panel border border-edge rounded-2xl focus-within:border-accent/60 transition-colors">
+      <div
+        className="corner-panel border border-edge bg-panel focus-within:border-accent/60 transition-colors"
+        onDrop={onDrop}
+        onDragOver={onDragOver}
+      >
+        <div className="flex items-center justify-between px-4 py-2 border-b border-edge">
+          <span className="font-mono text-[10px] tracking-widest text-muted/80 uppercase">prompt</span>
+        </div>
+
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={onKeyDown}
+          onPaste={onTextareaPaste}
           placeholder="Ask anything…"
           rows={3}
-          className="w-full bg-transparent resize-y outline-none px-3.5 pt-3 pb-1 text-[0.95rem] placeholder:text-muted/70 min-h-[4.5rem]"
+          className="w-full bg-transparent resize-y outline-none px-4 pt-3 pb-1 text-[0.95rem] placeholder:text-muted/70 min-h-[4.5rem]"
         />
 
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2.5">
+        {images.length > 0 && (
+          <div className="flex flex-wrap gap-2.5 px-4 pt-3 pb-1">
+            {images.map((im) => (
+              <ImageThumb key={im.id} image={im} onRemove={removeImage} />
+            ))}
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 border-t border-edge font-mono text-[11px] text-muted">
           <select
             value={model}
             onChange={(e) => setModel(e.target.value)}
-            className="bg-panel2 border border-edge rounded-lg text-sm px-2.5 py-1.5 outline-none hover:border-accent/50 transition cursor-pointer"
+            className="bg-panel2 border border-edge rounded text-[11px] font-mono px-2 py-1.5 outline-none hover:border-accent/50 transition cursor-pointer text-[#e8e2d6]"
           >
             {groups.map((g) => (
               <optgroup key={g.label} label={g.label}>
@@ -383,24 +522,39 @@ function AskView({ models, model, setModel, depth, setDepth, rate, maxTokens, se
             ))}
           </select>
 
-          {depthCtl && depthCtl.available && (
-            <div className="flex items-center gap-1.5">
-              <span className="text-xs text-muted">Depth</span>
-              <Switch
-                checked={depth === 'max'}
-                onChange={(v) => setDepth(v ? 'max' : 'low')}
-              />
-            </div>
-          )}
-          <div className="ml-auto flex items-center gap-2">
+          {depthCtl && depthCtl.available && <Switch checked={depth === 'max'} onChange={(v) => setDepth(v ? 'max' : 'low')} />}
+
+          <button
+            type="button"
+            onClick={() => fileInputRef.current && fileInputRef.current.click()}
+            title="Attach images"
+            className="flex items-center gap-1.5 text-muted hover:text-white transition-colors"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+              <path d="M21.44 11.05l-9.19 9.19a5 5 0 01-7.07-7.07l8.49-8.49a3.5 3.5 0 014.95 4.95l-8.49 8.49a2 2 0 01-2.83-2.83l7.78-7.78" />
+            </svg>
+            <span className={overLimit ? 'text-bad' : images.length ? 'text-good' : ''}>
+              {images.length}/{limits.max_images} · {(totalImageBytes / 1e6).toFixed(1)}/{limits.max_total_mb}mb
+            </span>
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept={limits.allowed_types.join(',')}
+            className="hidden"
+            onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }}
+          />
+
+          <div className="ml-auto flex items-center gap-3">
             {estimate != null && (
-              <span className="text-xs text-muted/70 whitespace-nowrap">est. ~{zl(estimate)}</span>
+              <span className="text-muted/70 whitespace-nowrap">est_in: {zl(estimate)}</span>
             )}
             <button
               onClick={clearAll}
-              disabled={loading || (!prompt && !result && !error)}
+              disabled={loading || (!prompt && !result && !error && images.length === 0)}
               title="Clear"
-              className="text-muted hover:text-white disabled:opacity-40 p-1.5 rounded-lg transition-colors"
+              className="text-muted hover:text-white disabled:opacity-40 p-1 transition-colors"
             >
               <svg
                 className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -416,17 +570,17 @@ function AskView({ models, model, setModel, depth, setDepth, rate, maxTokens, se
             <div className="relative inline-flex">
               <button
                 onClick={() => doSend(true)}
-                disabled={loading || !prompt.trim()}
-                className="flex items-center gap-2 bg-accent hover:bg-accent2 disabled:opacity-40 disabled:hover:bg-accent text-white text-sm font-medium pl-4 pr-3 py-1.5 rounded-l-lg transition-colors"
+                disabled={sendDisabled}
+                className="flex items-center gap-2 bg-accent hover:bg-accent2 disabled:opacity-40 disabled:hover:bg-accent text-accentInk text-[11px] font-bold pl-4 pr-3 py-1.5 transition-colors"
               >
                 {loading ? <span className="spinner" /> : null}
-                {loading ? 'Thinking' : 'Brief'}
+                {loading ? 'THINKING' : 'BRIEF'}
               </button>
               <button
                 onClick={() => setMenuOpen((o) => !o)}
-                disabled={loading || !prompt.trim()}
+                disabled={sendDisabled}
                 title="More send options"
-                className="bg-accent hover:bg-accent2 disabled:opacity-40 disabled:hover:bg-accent text-white px-2 py-1.5 rounded-r-lg border-l border-white/20 transition-colors"
+                className="bg-accent hover:bg-accent2 disabled:opacity-40 disabled:hover:bg-accent text-accentInk px-2 py-1.5 border-l border-accentInk/30 transition-colors"
               >
                 <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <polyline points="6 9 12 15 18 9" />
@@ -436,18 +590,18 @@ function AskView({ models, model, setModel, depth, setDepth, rate, maxTokens, se
               {menuOpen && (
                 <>
                   <div className="fixed inset-0 z-20" onClick={() => setMenuOpen(false)} />
-                  <div className="absolute bottom-full right-0 mb-1 w-36 bg-panel2 border border-edge rounded-lg overflow-hidden shadow-lg z-30">
+                  <div className="absolute bottom-full right-0 mb-1 w-36 bg-panel2 border border-edge overflow-hidden shadow-lg z-30 font-mono text-[11px]">
                     <button
                       onClick={() => { setMenuOpen(false); doSend(true); }}
-                      className="w-full text-left text-sm px-3 py-2 hover:bg-white/5 transition-colors"
+                      className="w-full text-left px-3 py-2 hover:bg-white/5 transition-colors"
                     >
-                      Brief
+                      brief
                     </button>
                     <button
                       onClick={() => { setMenuOpen(false); doSend(false); }}
-                      className="w-full text-left text-sm px-3 py-2 hover:bg-white/5 transition-colors"
+                      className="w-full text-left px-3 py-2 hover:bg-white/5 transition-colors"
                     >
-                      Send
+                      send
                     </button>
                   </div>
                 </>
@@ -457,6 +611,12 @@ function AskView({ models, model, setModel, depth, setDepth, rate, maxTokens, se
         </div>
       </div>
 
+      {imageError && (
+        <div className="border border-bad/40 bg-bad/10 text-bad font-mono text-[11px] px-3.5 py-2.5">
+          ! {imageError}
+        </div>
+      )}
+
       {loading && (
         <div className="text-sm text-muted flex items-center gap-2 px-1">
           <span className="spinner" />
@@ -465,15 +625,21 @@ function AskView({ models, model, setModel, depth, setDepth, rate, maxTokens, se
       )}
 
       {error && (
-        <div className="bg-red-950/40 border border-red-900/60 text-red-300 text-sm rounded-xl px-4 py-3">
+        <div className="bg-red-950/40 border border-bad/40 text-red-300 text-sm rounded-xl px-4 py-3">
           {error}
         </div>
       )}
 
       {result && (
-        <div className="bg-panel border border-edge rounded-2xl p-5 fade-in">
-          <Meta result={result} rate={rate} onCopy={copy} copied={copied} />
-          <Markdown text={result.answer} />
+        <div className="corner-panel border border-edge bg-panel fade-in">
+          <div className="flex items-center justify-between px-4 py-2 border-b border-edge">
+            <span className="font-mono text-[10px] tracking-widest text-muted/80 uppercase">response</span>
+            <span className="font-mono text-[10px] text-good">● 200 ok</span>
+          </div>
+          <div className="p-5">
+            <Meta result={result} rate={rate} onCopy={copy} copied={copied} />
+            <Markdown text={result.answer} />
+          </div>
         </div>
       )}
     </div>
@@ -813,12 +979,36 @@ function SettingsView({ settings, setSettings }) {
   );
 }
 
+function SessionSidebar({ model }) {
+  if (!model) return null;
+  const row = (label, value) => (
+    <div className="flex justify-between gap-3">
+      <span>{label}</span>
+      <span className="text-[#e8e2d6]">{value}</span>
+    </div>
+  );
+  return (
+    <div className="hidden lg:block w-[220px] shrink-0 border-l border-edge pl-6 py-1">
+      <div className="font-mono text-[10px] tracking-widest text-muted/80 uppercase mb-3">session</div>
+      <div className="font-mono text-[11px] text-muted space-y-2">
+        {row('provider', model.provider)}
+        {row('model', model.id)}
+        {row('ctx window', model.context_window >= 1_000_000
+          ? (model.context_window / 1_000_000) + 'm'
+          : Math.round(model.context_window / 1000) + 'k')}
+        {row('price /1m', '$' + model.input.toFixed(2) + ' / $' + model.output.toFixed(2))}
+      </div>
+    </div>
+  );
+}
+
 function Main({ onLogout }) {
   const [tab, setTab] = useState('ask');
+  const [navOpen, setNavOpen] = useState(false);
   const [models, setModels] = useState([]);
   const [model, setModel] = useState('');
   const [rate, setRate] = useState(1);
-  const [maxTokens, setMaxTokens] = useState(4096);
+  const [imageLimits, setImageLimits] = useState(null);
   const [depth, setDepth] = useState('low');
   const [settings, setSettings] = useState(loadSettings);
 
@@ -828,9 +1018,11 @@ function Main({ onLogout }) {
       setModels(d.models);
       setModel(d.default);
       setRate(d.usd_pln || 1);
-      setMaxTokens(d.max_tokens || 4096);
+      setImageLimits(d.image_limits || null);
     });
   }, []);
+
+  const currentModel = models.find((m) => m.id === model) || null;
 
   // Reset depth to 'low' whenever the model changes.
   useEffect(() => {
@@ -850,10 +1042,10 @@ function Main({ onLogout }) {
 
   const tabBtn = (id, label) => (
     <button
-      onClick={() => setTab(id)}
+      onClick={() => { setTab(id); setNavOpen(false); }}
       className={
-        'px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ' +
-        (tab === id ? 'bg-panel2 text-white' : 'text-muted hover:text-white')
+        'font-mono text-xs px-3 py-2 text-left transition-colors border-b '
+        + (tab === id ? 'text-accent border-accent' : 'text-muted border-transparent hover:text-white')
       }
     >
       {label}
@@ -862,38 +1054,62 @@ function Main({ onLogout }) {
 
   return (
     <div className="min-h-screen">
-      <header className="sticky top-0 z-10 backdrop-blur bg-ink/80 border-b border-edge">
-        <div className="max-w-2xl mx-auto px-5 h-14 flex items-center gap-3">
-          <div className="font-bold tracking-tight">
-            Brief<span className="text-accent">AI</span>
+      <header className="sticky top-0 z-10 backdrop-blur bg-ink/85 border-b border-edge">
+        <div className="max-w-4xl mx-auto px-5 h-14 flex items-center gap-2">
+          <div className="font-mono font-bold text-[15px]">
+            brief_ai<span className="text-accent glow">$</span>
           </div>
-          <nav className="flex items-center gap-1 ml-2">
-            {tabBtn('ask', 'Ask')}
-            {tabBtn('history', 'History')}
-            {tabBtn('settings', 'Settings')}
+          <nav className="hidden sm:flex items-center gap-5 ml-8">
+            {tabBtn('ask', 'ask')}
+            {tabBtn('history', 'history')}
+            {tabBtn('settings', 'settings')}
           </nav>
           <button
             onClick={logout}
-            className="ml-auto text-sm text-muted hover:text-white transition-colors"
+            className="hidden sm:block ml-auto font-mono text-xs text-muted hover:text-white transition-colors"
           >
-            Log out
+            [logout]
+          </button>
+          <button
+            onClick={() => setNavOpen((o) => !o)}
+            className="sm:hidden ml-auto font-mono text-sm text-accent"
+          >
+            [≡]
           </button>
         </div>
+        {navOpen && (
+          <div className="sm:hidden border-t border-edge px-5 py-2 flex flex-col bg-ink/95">
+            {tabBtn('ask', 'ask')}
+            {tabBtn('history', 'history')}
+            {tabBtn('settings', 'settings')}
+            <button
+              onClick={logout}
+              className="font-mono text-xs text-muted hover:text-white text-left py-2"
+            >
+              [logout]
+            </button>
+          </div>
+        )}
       </header>
 
-      <main className="max-w-2xl mx-auto px-5 py-6">
+      <main className="max-w-4xl mx-auto px-5 py-6">
         {tab === 'ask' && models.length > 0 && (
-          <AskView
-            models={models}
-            model={model}
-            setModel={setModel}
-            depth={depth}
-            setDepth={setDepth}
-            rate={rate}
-            maxTokens={maxTokens}
-            settings={settings}
-            onUnauth={unauth}
-          />
+          <div className="flex gap-8 items-start">
+            <div className="flex-1 min-w-0 max-w-2xl">
+              <AskView
+                models={models}
+                model={model}
+                setModel={setModel}
+                depth={depth}
+                setDepth={setDepth}
+                rate={rate}
+                imageLimits={imageLimits}
+                settings={settings}
+                onUnauth={unauth}
+              />
+            </div>
+            <SessionSidebar model={currentModel} />
+          </div>
         )}
         {tab === 'history' && <HistoryView rate={rate} onUnauth={unauth} />}
         {tab === 'settings' && <SettingsView settings={settings} setSettings={setSettings} />}
