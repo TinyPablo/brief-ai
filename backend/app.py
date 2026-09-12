@@ -14,6 +14,7 @@ from anthropic import Anthropic
 from flask import Flask, jsonify, request, session
 from google import genai
 from google.genai import types as genai_types
+from openai import OpenAI
 
 TOTP_SECRET = os.environ.get("TOTP_SECRET", "")
 if not re.fullmatch(r"[A-Z2-7]+=*", TOTP_SECRET):
@@ -37,22 +38,47 @@ anthropic_client = Anthropic()  # reads ANTHROPIC_API_KEY from the environment
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+
 SYSTEM_PROMPT = (
     "You are Brief AI. Answer the user clearly and directly. "
     "Use Markdown for structure and code when it helps. "
     "Be concise: no preamble, no filler, just the answer."
 )
 
-# provider: "anthropic" | "google"; input/output priced in USD per 1M tokens;
-# effort applies only to Anthropic models that accept output_config.effort.
+# provider: "anthropic" | "google" | "openai"; input/output priced in USD per
+# 1M tokens. "reasoning" (optional) maps the two UI depth states, "low" and
+# "max", to the provider-specific params that give this model its lowest and
+# highest reasoning effort. Models without a "reasoning" key have no depth
+# control at all - they don't support adjustable reasoning.
 MODELS = {
     "gemini-2.5-flash-lite": {"label": "Gemini 2.5 Flash Lite", "provider": "google", "input": 0.10, "output": 0.40},
-    "gemini-3.1-flash-lite": {"label": "Gemini 3.1 Flash Lite", "provider": "google", "input": 0.25, "output": 1.50},
-    "gemini-3.5-flash": {"label": "Gemini 3.5 Flash", "provider": "google", "input": 1.50, "output": 9.00},
-    "claude-haiku-4-5": {"label": "Haiku 4.5", "provider": "anthropic", "input": 1.0, "output": 5.0, "effort": False},
-    "claude-sonnet-4-6": {"label": "Sonnet 4.6", "provider": "anthropic", "input": 3.0, "output": 15.0, "effort": True},
-    "claude-opus-4-8": {"label": "Opus 4.8", "provider": "anthropic", "input": 5.0, "output": 25.0, "effort": True},
-    "claude-fable-5": {"label": "Fable 5", "provider": "anthropic", "input": 10.0, "output": 50.0, "effort": True},
+    "gemini-3.1-flash-lite": {
+        "label": "Gemini 3.1 Flash Lite", "provider": "google", "input": 0.25, "output": 1.50,
+        "reasoning": {"low": {"effort": "low"}, "max": {"effort": "high"}},
+    },
+    "gemini-3.5-flash": {
+        "label": "Gemini 3.5 Flash", "provider": "google", "input": 1.50, "output": 9.00,
+        "reasoning": {"low": {"effort": "low"}, "max": {"effort": "high"}},
+    },
+    "claude-haiku-4-5": {"label": "Haiku 4.5", "provider": "anthropic", "input": 1.0, "output": 5.0},
+    "claude-sonnet-4-6": {
+        "label": "Sonnet 4.6", "provider": "anthropic", "input": 3.0, "output": 15.0,
+        "reasoning": {"low": {"effort": "low", "thinking": False}, "max": {"effort": "max", "thinking": True}},
+    },
+    "claude-opus-4-8": {
+        "label": "Opus 4.8", "provider": "anthropic", "input": 5.0, "output": 25.0,
+        "reasoning": {"low": {"effort": "low", "thinking": False}, "max": {"effort": "max", "thinking": True}},
+    },
+    "claude-fable-5": {
+        "label": "Fable 5", "provider": "anthropic", "input": 10.0, "output": 50.0,
+        "reasoning": {"low": {"effort": "low", "thinking": True}, "max": {"effort": "max", "thinking": True}},
+    },
+    "gpt-6-astra": {
+        "label": "GPT-6 Astra", "provider": "openai", "input": 10.0, "output": 50.0,
+        "reasoning": {"low": {"effort": "low"}, "max": {"effort": "max"}},
+    },
 }
 MODEL_ORDER = [
     "gemini-2.5-flash-lite",
@@ -62,8 +88,9 @@ MODEL_ORDER = [
     "claude-sonnet-4-6",
     "claude-opus-4-8",
     "claude-fable-5",
+    "gpt-6-astra",
 ]
-PROVIDER_LABELS = {"anthropic": "Anthropic", "google": "Google Gemini"}
+PROVIDER_LABELS = {"anthropic": "Anthropic", "google": "Google Gemini", "openai": "OpenAI"}
 DEFAULT_MODEL = "gemini-3.1-flash-lite"
 
 MAX_TOKENS = 4096
@@ -71,11 +98,10 @@ LOGIN_COOLDOWN = 3.0
 LOGIN_MAX_FAILURES = 5
 LOGIN_LOCKOUT_SECONDS = 5 * 60
 
-# Effort levels. Anthropic effort-capable models accept all of them; Gemini 3.x
-# maps effort to thinking_level (low/medium/high). Default is the fastest.
-EFFORT_LEVELS = ["low", "medium", "high", "max"]
-GEMINI_EFFORT_LEVELS = ["low", "medium", "high"]
-DEFAULT_EFFORT = "low"
+# The two reasoning-depth states exposed in the UI. Each reasoning-capable
+# model maps these to its own provider-specific effort/thinking params.
+DEPTH_LEVELS = ["low", "max"]
+DEFAULT_DEPTH = "low"
 
 # Per-prompt price estimate assumptions, converted to PLN with a fixed rate.
 ESTIMATE_INPUT_TOKENS = 1000
@@ -145,18 +171,10 @@ def estimate_pln(cfg):
     return round(usd * USD_TO_PLN, 4)
 
 
-def build_reasoning_label(model, effort, thinking):
-    cfg = MODELS[model]
-    if cfg["provider"] == "anthropic":
-        if not cfg.get("effort"):
-            return None
-        parts = [effort.capitalize()] if effort in EFFORT_LEVELS else []
-        if model == "claude-fable-5" or thinking == "on":
-            parts.append("thinking")
-        return " · ".join(parts) if parts else None
-    if model.startswith("gemini-3"):
-        return effort.capitalize() if effort in GEMINI_EFFORT_LEVELS else None
-    return None
+def build_reasoning_label(model, depth):
+    if not MODELS[model].get("reasoning"):
+        return None
+    return depth.capitalize() if depth in DEPTH_LEVELS else None
 
 
 def client_ip():
@@ -175,7 +193,7 @@ def require_auth(view):
     return wrapper
 
 
-def call_anthropic(model, prompt, effort, thinking):
+def call_anthropic(model, prompt, depth):
     cfg = MODELS[model]
     kwargs = dict(
         model=model,
@@ -183,10 +201,10 @@ def call_anthropic(model, prompt, effort, thinking):
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],
     )
-    if cfg.get("effort"):
-        if effort in EFFORT_LEVELS:
-            kwargs["output_config"] = {"effort": effort}
-        if model != "claude-fable-5" and thinking == "on":
+    reasoning = cfg.get("reasoning", {}).get(depth)
+    if reasoning:
+        kwargs["output_config"] = {"effort": reasoning["effort"]}
+        if reasoning.get("thinking"):
             kwargs["thinking"] = {"type": "adaptive"}
 
     if model == "claude-fable-5":
@@ -218,25 +236,19 @@ def call_anthropic(model, prompt, effort, thinking):
     }
 
 
-def build_gemini_thinking(reasoning):
-    level = {"low": "low", "medium": "medium", "high": "high", "max": "high"}.get(reasoning)
-    if not level:
-        return None
-    try:
-        return genai_types.ThinkingConfig(thinking_level=level)
-    except Exception:
-        return None
 
 
-def call_gemini(model, prompt, effort):
+def call_gemini(model, prompt, depth):
     if gemini_client is None:
         raise RuntimeError("GEMINI_API_KEY is not configured")
 
     config_args = dict(system_instruction=SYSTEM_PROMPT, max_output_tokens=MAX_TOKENS)
-    if model.startswith("gemini-3"):
-        thinking = build_gemini_thinking(effort)
-        if thinking is not None:
-            config_args["thinking_config"] = thinking
+    reasoning = MODELS[model].get("reasoning", {}).get(depth)
+    if reasoning:
+        try:
+            config_args["thinking_config"] = genai_types.ThinkingConfig(thinking_level=reasoning["effort"])
+        except Exception:
+            pass
 
     resp = gemini_client.models.generate_content(
         model=model,
@@ -268,6 +280,35 @@ def call_gemini(model, prompt, effort):
         "output_tokens": out_tok,
         "stop_reason": stop_reason,
         "served": model,
+    }
+
+
+def call_openai(model, prompt, depth):
+    if openai_client is None:
+        raise RuntimeError("OPENAI_API_KEY is not configured")
+
+    kwargs = dict(
+        model=model,
+        max_completion_tokens=MAX_TOKENS,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+    )
+    reasoning = MODELS[model].get("reasoning", {}).get(depth)
+    if reasoning:
+        kwargs["reasoning_effort"] = reasoning["effort"]
+
+    resp = openai_client.chat.completions.create(**kwargs)
+    choice = resp.choices[0]
+    answer = (choice.message.content or "").strip() or "_No response._"
+
+    return {
+        "answer": answer,
+        "input_tokens": resp.usage.prompt_tokens,
+        "output_tokens": resp.usage.completion_tokens,
+        "stop_reason": choice.finish_reason,
+        "served": resp.model,
     }
 
 
@@ -331,28 +372,9 @@ def logout():
 @app.get("/api/config")
 @require_auth
 def config():
-    effort_options = [{"value": v, "label": v.capitalize()} for v in EFFORT_LEVELS]
-    gemini_effort_options = [{"value": v, "label": v.capitalize()} for v in GEMINI_EFFORT_LEVELS]
-
     models = []
     for model_id in MODEL_ORDER:
         cfg = MODELS[model_id]
-        if cfg["provider"] == "anthropic":
-            if cfg.get("effort"):
-                effort_ctl = {"available": True, "options": effort_options, "default": "low"}
-                if model_id == "claude-fable-5":
-                    thinking_ctl = {"available": False, "value": "on"}
-                else:
-                    thinking_ctl = {"available": True, "default": "off"}
-            else:
-                effort_ctl = {"available": False, "value": "-"}
-                thinking_ctl = {"available": False, "value": "off"}
-        else:
-            if model_id.startswith("gemini-3"):
-                effort_ctl = {"available": True, "options": gemini_effort_options, "default": "low"}
-            else:
-                effort_ctl = {"available": False, "value": "Off"}
-            thinking_ctl = {"available": False, "value": "off"}
         models.append({
             "id": model_id,
             "label": cfg["label"],
@@ -360,8 +382,7 @@ def config():
             "provider_label": PROVIDER_LABELS[cfg["provider"]],
             "input": cfg["input"],
             "output": cfg["output"],
-            "effort": effort_ctl,
-            "thinking": thinking_ctl,
+            "depth": {"available": bool(cfg.get("reasoning"))},
             "est_pln": estimate_pln(cfg),
         })
     return jsonify(
@@ -383,20 +404,19 @@ def generate():
     if not prompt:
         return jsonify(error="empty_prompt"), 400
 
-    effort = data.get("effort", DEFAULT_EFFORT)
-    if effort not in EFFORT_LEVELS:
-        effort = DEFAULT_EFFORT
-    thinking = data.get("thinking", "off")
-    if thinking not in ("on", "off"):
-        thinking = "off"
+    depth = data.get("depth", DEFAULT_DEPTH)
+    if depth not in DEPTH_LEVELS:
+        depth = DEFAULT_DEPTH
 
     provider = MODELS[model]["provider"]
     start = time.perf_counter()
     try:
         if provider == "google":
-            result = call_gemini(model, prompt, effort)
+            result = call_gemini(model, prompt, depth)
+        elif provider == "openai":
+            result = call_openai(model, prompt, depth)
         else:
-            result = call_anthropic(model, prompt, effort, thinking)
+            result = call_anthropic(model, prompt, depth)
     except Exception as exc:  # surface API/network errors to the client
         traceback.print_exc()
         return jsonify(error="api_error", detail=str(exc)), 502
@@ -408,7 +428,7 @@ def generate():
     out_tok = result["output_tokens"]
     cost = in_tok / 1_000_000 * price["input"] + out_tok / 1_000_000 * price["output"]
 
-    stored_reasoning = build_reasoning_label(model, effort, thinking)
+    stored_reasoning = build_reasoning_label(model, depth)
 
     with get_db() as conn, conn.cursor() as cur:
         cur.execute(

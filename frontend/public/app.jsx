@@ -277,14 +277,10 @@ function Switch({ checked, disabled, onChange }) {
   );
 }
 
-function AskView({ models, model, setModel, effort, setEffort, thinking, setThinking, rate, maxTokens, settings, onUnauth }) {
+function AskView({ models, model, setModel, depth, setDepth, rate, maxTokens, settings, onUnauth }) {
   const groups = useMemo(() => groupByProvider(models), [models]);
   const currentModel = models.find((m) => m.id === model) || null;
-  const effortCtl = currentModel ? currentModel.effort : null;
-  const thinkingCtl = currentModel ? currentModel.thinking : null;
-  const thinkingChecked = thinkingCtl
-    ? (thinkingCtl.available ? thinking === 'on' : thinkingCtl.value === 'on')
-    : false;
+  const depthCtl = currentModel ? currentModel.depth : null;
   const [prompt, setPrompt] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
@@ -320,7 +316,7 @@ function AskView({ models, model, setModel, effort, setEffort, thinking, setThin
     try {
       const res = await api('/generate', {
         method: 'POST',
-        body: JSON.stringify({ model, prompt: text, effort, thinking }),
+        body: JSON.stringify({ model, prompt: text, depth }),
       });
       if (res.status === 401) { onUnauth(); return; }
       const data = await res.json().catch(() => ({}));
@@ -387,33 +383,15 @@ function AskView({ models, model, setModel, effort, setEffort, thinking, setThin
             ))}
           </select>
 
-          <div className="flex items-center gap-1.5">
-            <span className="text-xs text-muted">Effort</span>
-            {effortCtl && effortCtl.available ? (
-              <select
-                value={effort}
-                onChange={(e) => setEffort(e.target.value)}
-                className="bg-panel2 border border-edge rounded-lg text-sm px-2 py-1 outline-none hover:border-accent/50 transition cursor-pointer"
-              >
-                {effortCtl.options.map((o) => (
-                  <option key={o.value} value={o.value}>{o.label}</option>
-                ))}
-              </select>
-            ) : (
-              <span className="text-sm text-muted/80 bg-panel2 border border-edge rounded-lg px-2 py-1">
-                {effortCtl ? effortCtl.value : '-'}
-              </span>
-            )}
-          </div>
-
-          <div className="flex items-center gap-1.5">
-            <span className="text-xs text-muted">Thinking</span>
-            <Switch
-              checked={thinkingChecked}
-              disabled={!thinkingCtl || !thinkingCtl.available}
-              onChange={(v) => setThinking(v ? 'on' : 'off')}
-            />
-          </div>
+          {depthCtl && depthCtl.available && (
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-muted">Depth</span>
+              <Switch
+                checked={depth === 'max'}
+                onChange={(v) => setDepth(v ? 'max' : 'low')}
+              />
+            </div>
+          )}
           <div className="ml-auto flex items-center gap-2">
             {estimate != null && (
               <span className="text-xs text-muted/70 whitespace-nowrap">est. ~{zl(estimate)}</span>
@@ -841,8 +819,7 @@ function Main({ onLogout }) {
   const [model, setModel] = useState('');
   const [rate, setRate] = useState(1);
   const [maxTokens, setMaxTokens] = useState(4096);
-  const [effort, setEffort] = useState('low');
-  const [thinking, setThinking] = useState('off');
+  const [depth, setDepth] = useState('low');
   const [settings, setSettings] = useState(loadSettings);
 
   useEffect(() => {
@@ -855,13 +832,10 @@ function Main({ onLogout }) {
     });
   }, []);
 
-  // Reset effort/thinking to the selected model's control defaults (always lowest).
+  // Reset depth to 'low' whenever the model changes.
   useEffect(() => {
-    const m = models.find((x) => x.id === model);
-    if (!m) return;
-    setEffort(m.effort && m.effort.available ? m.effort.default : 'low');
-    setThinking(m.thinking && m.thinking.available ? m.thinking.default : (m.thinking ? m.thinking.value : 'off'));
-  }, [model, models]);
+    setDepth('low');
+  }, [model]);
 
   useEffect(() => {
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) { /* noop */ }
@@ -913,10 +887,8 @@ function Main({ onLogout }) {
             models={models}
             model={model}
             setModel={setModel}
-            effort={effort}
-            setEffort={setEffort}
-            thinking={thinking}
-            setThinking={setThinking}
+            depth={depth}
+            setDepth={setDepth}
             rate={rate}
             maxTokens={maxTokens}
             settings={settings}
