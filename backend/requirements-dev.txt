@@ -1,0 +1,3 @@
+# Only needed to run the test suite locally (backend/tests) - not part of
+# the deployed image (see requirements.txt).
+pytest==8.3.3
