@@ -77,7 +77,9 @@ MODELS = {
     },
     "gpt-6-astra": {
         "label": "GPT-6 Astra", "provider": "openai", "input": 10.0, "output": 50.0,
-        "reasoning": {"low": {"effort": "low"}, "max": {"effort": "max"}},
+        # Chat Completions caps reasoning_effort at "xhigh" for this model
+        # (the Responses API's "max" isn't accepted here).
+        "reasoning": {"low": {"effort": "low"}, "max": {"effort": "xhigh"}},
     },
 }
 MODEL_ORDER = [
