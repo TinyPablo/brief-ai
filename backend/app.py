@@ -1,3 +1,5 @@
+import base64
+import binascii
 import os
 import re
 import secrets
@@ -53,30 +55,30 @@ SYSTEM_PROMPT = (
 # highest reasoning effort. Models without a "reasoning" key have no depth
 # control at all - they don't support adjustable reasoning.
 MODELS = {
-    "gemini-2.5-flash-lite": {"label": "Gemini 2.5 Flash Lite", "provider": "google", "input": 0.10, "output": 0.40},
+    "gemini-2.5-flash-lite": {"label": "Gemini 2.5 Flash Lite", "provider": "google", "input": 0.10, "output": 0.40, "context_window": 1_000_000},
     "gemini-3.1-flash-lite": {
-        "label": "Gemini 3.1 Flash Lite", "provider": "google", "input": 0.25, "output": 1.50,
+        "label": "Gemini 3.1 Flash Lite", "provider": "google", "input": 0.25, "output": 1.50, "context_window": 1_000_000,
         "reasoning": {"low": {"effort": "low"}, "max": {"effort": "high"}},
     },
     "gemini-3.5-flash": {
-        "label": "Gemini 3.5 Flash", "provider": "google", "input": 1.50, "output": 9.00,
+        "label": "Gemini 3.5 Flash", "provider": "google", "input": 1.50, "output": 9.00, "context_window": 1_000_000,
         "reasoning": {"low": {"effort": "low"}, "max": {"effort": "high"}},
     },
-    "claude-haiku-4-5": {"label": "Haiku 4.5", "provider": "anthropic", "input": 1.0, "output": 5.0},
+    "claude-haiku-4-5": {"label": "Haiku 4.5", "provider": "anthropic", "input": 1.0, "output": 5.0, "context_window": 200_000},
     "claude-sonnet-4-6": {
-        "label": "Sonnet 4.6", "provider": "anthropic", "input": 3.0, "output": 15.0,
+        "label": "Sonnet 4.6", "provider": "anthropic", "input": 3.0, "output": 15.0, "context_window": 200_000,
         "reasoning": {"low": {"effort": "low", "thinking": False}, "max": {"effort": "max", "thinking": True}},
     },
     "claude-opus-4-8": {
-        "label": "Opus 4.8", "provider": "anthropic", "input": 5.0, "output": 25.0,
+        "label": "Opus 4.8", "provider": "anthropic", "input": 5.0, "output": 25.0, "context_window": 200_000,
         "reasoning": {"low": {"effort": "low", "thinking": False}, "max": {"effort": "max", "thinking": True}},
     },
     "claude-fable-5": {
-        "label": "Fable 5", "provider": "anthropic", "input": 10.0, "output": 50.0,
+        "label": "Fable 5", "provider": "anthropic", "input": 10.0, "output": 50.0, "context_window": 200_000,
         "reasoning": {"low": {"effort": "low", "thinking": True}, "max": {"effort": "max", "thinking": True}},
     },
     "gpt-6-astra": {
-        "label": "GPT-6 Astra", "provider": "openai", "input": 10.0, "output": 50.0,
+        "label": "GPT-6 Astra", "provider": "openai", "input": 10.0, "output": 50.0, "context_window": 400_000,
         # Chat Completions caps reasoning_effort at "xhigh" for this model
         # (the Responses API's "max" isn't accepted here).
         "reasoning": {"low": {"effort": "low"}, "max": {"effort": "xhigh"}},
@@ -109,6 +111,13 @@ DEFAULT_DEPTH = "low"
 ESTIMATE_INPUT_TOKENS = 1000
 ESTIMATE_OUTPUT_TOKENS = 1500
 USD_TO_PLN = 4.0
+
+# Image attachment limits, enforced here (never trust the client) and mirrored
+# to the frontend via /api/config so there's one source of truth for the numbers.
+MAX_IMAGES = 20
+MAX_IMAGE_MB = 10
+MAX_TOTAL_IMAGE_MB = 24
+ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 
 CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS prompts (
@@ -186,6 +195,63 @@ def client_ip():
     return request.remote_addr or "unknown"
 
 
+def validate_images(images):
+    """Decode and validate an `images` payload against MAX_IMAGES /
+    MAX_IMAGE_MB / MAX_TOTAL_IMAGE_MB / ALLOWED_IMAGE_TYPES.
+
+    Returns (None, decoded_images) on success, where decoded_images is
+    images with "data" replaced by raw decoded bytes; returns
+    ((error_code, message), None) on the first violation found.
+    """
+    if not images:
+        return None, []
+    if not isinstance(images, list):
+        return ("invalid_images", "images must be a list"), None
+    if len(images) > MAX_IMAGES:
+        return (
+            "too_many_images",
+            f"Max {MAX_IMAGES} images per prompt (got {len(images)}).",
+        ), None
+
+    decoded = []
+    total_bytes = 0
+    max_image_bytes = MAX_IMAGE_MB * 1_000_000
+    max_total_bytes = MAX_TOTAL_IMAGE_MB * 1_000_000
+    for i, img in enumerate(images):
+        if not isinstance(img, dict):
+            return ("invalid_images", f"image {i} is not an object"), None
+        media_type = img.get("media_type")
+        data = img.get("data")
+        if media_type not in ALLOWED_IMAGE_TYPES:
+            return (
+                "unsupported_image_type",
+                f"image {i} has unsupported type {media_type!r}.",
+            ), None
+        if not isinstance(data, str) or not data:
+            return ("invalid_images", f"image {i} is missing base64 data"), None
+        try:
+            raw = base64.b64decode(data, validate=True)
+        except (binascii.Error, ValueError):
+            return ("invalid_images", f"image {i} is not valid base64"), None
+
+        if len(raw) > max_image_bytes:
+            return (
+                "image_too_large",
+                f"image {i} is {len(raw) / 1_000_000:.1f}MB, max is {MAX_IMAGE_MB}MB.",
+            ), None
+        total_bytes += len(raw)
+        if total_bytes > max_total_bytes:
+            return (
+                "images_too_large_total",
+                f"Attached images total {total_bytes / 1_000_000:.1f}MB, "
+                f"max is {MAX_TOTAL_IMAGE_MB}MB.",
+            ), None
+
+        decoded.append({"media_type": media_type, "data": data, "raw": raw})
+
+    return None, decoded
+
+
 def require_auth(view):
     @wraps(view)
     def wrapper(*args, **kwargs):
@@ -195,13 +261,20 @@ def require_auth(view):
     return wrapper
 
 
-def call_anthropic(model, prompt, depth):
+def call_anthropic(model, prompt, depth, images=None):
     cfg = MODELS[model]
+    content = []
+    for img in images or []:
+        content.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": img["media_type"], "data": img["data"]},
+        })
+    content.append({"type": "text", "text": prompt})
     kwargs = dict(
         model=model,
         max_tokens=MAX_TOKENS,
         system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}],
+        messages=[{"role": "user", "content": content}],
     )
     reasoning = cfg.get("reasoning", {}).get(depth)
     if reasoning:
@@ -240,7 +313,7 @@ def call_anthropic(model, prompt, depth):
 
 
 
-def call_gemini(model, prompt, depth):
+def call_gemini(model, prompt, depth, images=None):
     if gemini_client is None:
         raise RuntimeError("GEMINI_API_KEY is not configured")
 
@@ -252,9 +325,15 @@ def call_gemini(model, prompt, depth):
         except Exception:
             pass
 
+    contents = [
+        genai_types.Part.from_bytes(data=img["raw"], mime_type=img["media_type"])
+        for img in images or []
+    ]
+    contents.append(prompt)
+
     resp = gemini_client.models.generate_content(
         model=model,
-        contents=prompt,
+        contents=contents,
         config=genai_types.GenerateContentConfig(**config_args),
     )
 
@@ -285,16 +364,22 @@ def call_gemini(model, prompt, depth):
     }
 
 
-def call_openai(model, prompt, depth):
+def call_openai(model, prompt, depth, images=None):
     if openai_client is None:
         raise RuntimeError("OPENAI_API_KEY is not configured")
+
+    user_content = [
+        {"type": "image_url", "image_url": {"url": f"data:{img['media_type']};base64,{img['data']}"}}
+        for img in images or []
+    ]
+    user_content.append({"type": "text", "text": prompt})
 
     kwargs = dict(
         model=model,
         max_completion_tokens=MAX_TOKENS,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
+            {"role": "user", "content": user_content},
         ],
     )
     reasoning = MODELS[model].get("reasoning", {}).get(depth)
@@ -384,6 +469,7 @@ def config():
             "provider_label": PROVIDER_LABELS[cfg["provider"]],
             "input": cfg["input"],
             "output": cfg["output"],
+            "context_window": cfg["context_window"],
             "depth": {"available": bool(cfg.get("reasoning"))},
             "est_pln": estimate_pln(cfg),
         })
@@ -392,6 +478,12 @@ def config():
         default=DEFAULT_MODEL,
         usd_pln=USD_TO_PLN,
         max_tokens=MAX_TOKENS,
+        image_limits={
+            "max_images": MAX_IMAGES,
+            "max_image_mb": MAX_IMAGE_MB,
+            "max_total_mb": MAX_TOTAL_IMAGE_MB,
+            "allowed_types": sorted(ALLOWED_IMAGE_TYPES),
+        },
     )
 
 
@@ -410,15 +502,20 @@ def generate():
     if depth not in DEPTH_LEVELS:
         depth = DEFAULT_DEPTH
 
+    error, images = validate_images(data.get("images"))
+    if error:
+        code, message = error
+        return jsonify(error=code, detail=message), 400
+
     provider = MODELS[model]["provider"]
     start = time.perf_counter()
     try:
         if provider == "google":
-            result = call_gemini(model, prompt, depth)
+            result = call_gemini(model, prompt, depth, images)
         elif provider == "openai":
-            result = call_openai(model, prompt, depth)
+            result = call_openai(model, prompt, depth, images)
         else:
-            result = call_anthropic(model, prompt, depth)
+            result = call_anthropic(model, prompt, depth, images)
     except Exception as exc:  # surface API/network errors to the client
         traceback.print_exc()
         return jsonify(error="api_error", detail=str(exc)), 502

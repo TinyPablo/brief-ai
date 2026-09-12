@@ -8,7 +8,7 @@
 
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
 
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
@@ -19,17 +19,20 @@
       theme: {
         extend: {
           colors: {
-            ink: '#0a0a0c',
-            panel: '#131318',
-            panel2: '#1a1a20',
-            edge: '#26262e',
-            muted: '#8a8a95',
-            accent: '#7c6cf0',
-            accent2: '#9b8ff5',
+            ink: '#0d0c0a',
+            panel: '#1a1712',
+            panel2: '#221e17',
+            edge: '#3a3226',
+            muted: '#9c9286',
+            accent: '#e6a84a',
+            accent2: '#f0bd6e',
+            accentInk: '#241a08',
+            good: '#6cc48a',
+            bad: '#dc5b45',
           },
           fontFamily: {
-            sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
-            mono: ['JetBrains Mono', 'ui-monospace', 'monospace'],
+            sans: ['Space Grotesk', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+            mono: ['Space Mono', 'ui-monospace', 'monospace'],
           },
         },
       },
@@ -37,30 +40,52 @@
   </script>
 
   <style>
-    html, body { background: #0a0a0c; }
-    ::selection { background: rgba(124, 108, 240, 0.35); }
+    html, body {
+      background: #0d0c0a;
+      background-image:
+        repeating-linear-gradient(0deg, rgba(255,255,255,0.014) 0px, transparent 1px, transparent 18px),
+        repeating-linear-gradient(90deg, rgba(255,255,255,0.014) 0px, transparent 1px, transparent 18px),
+        radial-gradient(900px 500px at 50% -10%, rgba(230,168,74,0.07), transparent 60%);
+      background-attachment: fixed;
+    }
+    ::selection { background: rgba(230, 168, 74, 0.3); }
 
     ::-webkit-scrollbar { width: 10px; height: 10px; }
     ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: #2a2a33; border-radius: 6px; border: 2px solid #0a0a0c; }
-    ::-webkit-scrollbar-thumb:hover { background: #3a3a45; }
+    ::-webkit-scrollbar-thumb { background: #322b20; border-radius: 6px; border: 2px solid #0d0c0a; }
+    ::-webkit-scrollbar-thumb:hover { background: #453b2b; }
 
     .pin-input {
-      caret-color: #7c6cf0;
+      caret-color: #e6a84a;
     }
     .pin-input:focus {
-      border-color: #7c6cf0;
-      box-shadow: 0 0 0 3px rgba(124, 108, 240, 0.18);
+      border-color: #e6a84a;
+      box-shadow: 0 0 0 3px rgba(230, 168, 74, 0.18);
     }
 
     .spinner {
       width: 16px; height: 16px;
       border: 2px solid rgba(255,255,255,0.15);
-      border-top-color: #9b8ff5;
+      border-top-color: #f0bd6e;
       border-radius: 50%;
       animation: spin 0.7s linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Command Deck HUD accents, reused across the header/composer/result panels */
+    .glow { text-shadow: 0 0 14px rgba(230, 168, 74, 0.5); }
+
+    .corner-panel { position: relative; }
+    .corner-panel::before, .corner-panel::after {
+      content: ''; position: absolute; width: 9px; height: 9px;
+      border: 1.5px solid #e6a84a; opacity: 0.7; pointer-events: none;
+    }
+    .corner-panel::before { top: -1px; left: -1px; border-right: none; border-bottom: none; }
+    .corner-panel::after { bottom: -1px; right: -1px; border-left: none; border-top: none; }
+
+    .gauge-track { height: 5px; background: #221e17; position: relative; overflow: hidden; }
+    .gauge-fill { position: absolute; left: 0; top: 0; bottom: 0; background: #6cc48a; transition: width 0.2s ease-out; }
+    .gauge-fill.over { background: #dc5b45; }
 
     .fade-in { animation: fade 0.25s ease-out; }
     @keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
@@ -75,16 +100,16 @@
     .md ul, .md ol { margin: 0.7em 0; padding-left: 1.4em; }
     .md ul { list-style: disc; } .md ol { list-style: decimal; }
     .md li { margin: 0.25em 0; }
-    .md a { color: #a5a0f5; text-decoration: underline; text-underline-offset: 2px; }
+    .md a { color: #f0bd6e; text-decoration: underline; text-underline-offset: 2px; }
     .md strong { color: #f2f2f6; font-weight: 600; }
-    .md code { font-family: 'JetBrains Mono', monospace; font-size: 0.85em; background: #23232b; padding: 0.15em 0.4em; border-radius: 0.35em; }
-    .md pre { background: #0e0e12 !important; border: 1px solid #26262e; border-radius: 0.6rem; padding: 1rem; overflow: auto; margin: 0.85em 0; }
+    .md code { font-family: 'Space Mono', monospace; font-size: 0.85em; background: #221e17; padding: 0.15em 0.4em; border-radius: 0.35em; }
+    .md pre { background: #131110 !important; border: 1px solid #3a3226; border-radius: 0.6rem; padding: 1rem; overflow: auto; margin: 0.85em 0; }
     .md pre code { background: none !important; padding: 0; font-size: 0.83rem; line-height: 1.55; }
-    .md blockquote { border-left: 3px solid #3a3a44; padding-left: 1em; color: #a4a4ae; margin: 0.7em 0; }
+    .md blockquote { border-left: 3px solid #e6a84a; padding-left: 1em; color: #ab9f8f; margin: 0.7em 0; }
     .md table { border-collapse: collapse; width: 100%; margin: 0.8em 0; font-size: 0.9rem; }
-    .md th, .md td { border: 1px solid #26262e; padding: 0.45em 0.75em; text-align: left; }
-    .md th { background: #17171d; }
-    .md hr { border: none; border-top: 1px solid #26262e; margin: 1.2em 0; }
+    .md th, .md td { border: 1px solid #3a3226; padding: 0.45em 0.75em; text-align: left; }
+    .md th { background: #1a1712; }
+    .md hr { border: none; border-top: 1px solid #3a3226; margin: 1.2em 0; }
     .md .katex { font-size: 1.05em; }
     .md .katex-display { overflow-x: auto; overflow-y: hidden; padding: 0.2em 0; margin: 0.8em 0; }
 
@@ -92,12 +117,12 @@
     .copy-btn {
       position: absolute; top: 8px; right: 8px;
       font-size: 11px; line-height: 1; padding: 4px 8px;
-      color: #9a9aa4; background: #1b1b22; border: 1px solid #2c2c35;
+      color: #9c9286; background: #1a1712; border: 1px solid #3a3226;
       border-radius: 6px; cursor: pointer; opacity: 0;
       transition: opacity 0.15s, color 0.15s, border-color 0.15s;
     }
     .md pre:hover .copy-btn, .copy-btn:focus { opacity: 1; }
-    .copy-btn:hover { color: #fff; border-color: #3a3a45; }
+    .copy-btn:hover { color: #fff; border-color: #453b2b; }
   </style>
 </head>
 <body class="font-sans text-[#e6e6ec] antialiased">

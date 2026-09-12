@@ -15,12 +15,15 @@ persistent session, so you log in once and stay in across tabs.
 - Google Authenticator (TOTP) login with a persistent session cookie.
 - Brute-force protection: 3-second server-side cooldown per attempt, plus a 5-minute
   lockout after 5 consecutive failures.
-- Model picker grouped by provider - **Anthropic** (Haiku 4.5, Sonnet 4.6, Opus 4.8, Fable 5)
-  and **Google Gemini** (2.5 Flash Lite, 3.1 Flash Lite, 3.5 Flash), each showing a
-  per-prompt price estimate.
-- Unified reasoning selector (Low-Max) mapped to Anthropic effort / Gemini thinking level.
+- Model picker grouped by provider - **Anthropic** (Haiku 4.5, Sonnet 4.6, Opus 4.8, Fable 5),
+  **Google Gemini** (2.5 Flash Lite, 3.1 Flash Lite, 3.5 Flash), and **OpenAI** (GPT-6 Astra),
+  each showing a per-prompt price estimate.
+- Unified reasoning selector (Low-Max) mapped to each provider's own effort/thinking controls.
+- Attach multiple images to a prompt (drag & drop, paste, or the file picker) on any model -
+  up to 20 images, 10MB per image, 24MB total per prompt. Limits are enforced both in the
+  browser and on the server.
 - Optional prompt context (date, location, personal data) toggled in Settings and stored in the browser.
-- Live cost estimate from the prompt length before sending.
+- Live cost estimate (input only - text + attached images) from the prompt before sending.
 - Rendered Markdown answers with LaTeX math, syntax-highlighted code, and per-block copy buttons.
 - Shows generation time, input/output tokens, and price (in PLN) per prompt.
 - Prompt history stored in PostgreSQL - grouped by week/day (collapsible), full-text
@@ -122,3 +125,7 @@ docker volume rm brief-ai_db_data
 - Prices are computed from published per-model rates and shown in PLN at a fixed USD→PLN
   rate. The per-model estimate in the dropdown assumes a typical prompt of ~1000 input +
   ~1500 output tokens. Both the rate and the assumption are constants in `backend/app.py`.
+- Image attachments aren't blocked on any model - attaching to a pricier model just costs
+  more, which is a deliberate tradeoff, not a bug. Attached images are sent with the
+  request but never stored: they're not persisted to the database, so they won't appear
+  when you revisit a prompt in History.
