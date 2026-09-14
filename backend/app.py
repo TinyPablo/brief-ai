@@ -131,6 +131,15 @@ MAX_IMAGE_MB = 10
 MAX_TOTAL_IMAGE_MB = 24
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 
+# The Settings context block is user-controlled free text arriving from the
+# browser, so it needs an upper bound. Generous enough that nobody hits it by
+# writing about themselves; small enough that it can't be used as a payload.
+MAX_CONTEXT_CHARS = 8000
+
+# Prefix the Brief button asks for. Applied when composing the text sent to the
+# model; never stored in the `prompt` column (the `brief` flag records it).
+BRIEF_PREFIX = "very brief: "
+
 CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS prompts (
     id SERIAL PRIMARY KEY,
@@ -143,9 +152,26 @@ CREATE TABLE IF NOT EXISTS prompts (
     cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
     duration_ms INTEGER NOT NULL DEFAULT 0,
     stop_reason TEXT,
-    reasoning TEXT
+    reasoning TEXT,
+    context TEXT,
+    brief BOOLEAN NOT NULL DEFAULT FALSE,
+    prompt_is_raw BOOLEAN NOT NULL DEFAULT FALSE
 )
 """
+
+# Columns added after the table shipped, applied on every boot. `prompt_is_raw`
+# is the discriminator that matters: rows written before the split have the
+# whole composed blob - context lines, brief prefix and all - sitting in
+# `prompt`, and there is no reliable way to take it apart again. Anything that
+# treats `prompt` as "what the user actually typed" (sharing, previews) must
+# check this flag first, because a NULL `context` is ambiguous: it also
+# describes a new row written with every Settings toggle switched off.
+MIGRATIONS = (
+    "ALTER TABLE prompts ADD COLUMN IF NOT EXISTS reasoning TEXT",
+    "ALTER TABLE prompts ADD COLUMN IF NOT EXISTS context TEXT",
+    "ALTER TABLE prompts ADD COLUMN IF NOT EXISTS brief BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE prompts ADD COLUMN IF NOT EXISTS prompt_is_raw BOOLEAN NOT NULL DEFAULT FALSE",
+)
 
 app = Flask(__name__)
 app.config.update(
@@ -179,7 +205,8 @@ def init_db():
     try:
         with conn, conn.cursor() as cur:
             cur.execute(CREATE_SQL)
-            cur.execute("ALTER TABLE prompts ADD COLUMN IF NOT EXISTS reasoning TEXT")
+            for statement in MIGRATIONS:
+                cur.execute(statement)
     except psycopg2.Error as exc:
         print("init_db:", exc)
     finally:
@@ -198,6 +225,23 @@ def build_reasoning_label(model, depth):
     if not MODELS[model].get("reasoning"):
         return None
     return depth.capitalize() if depth in DEPTH_LEVELS else None
+
+
+def compose_prompt(prompt, context, brief):
+    """Build the text actually sent to the model.
+
+    The three parts are stored separately and only ever joined here, on the way
+    out. That keeps `prompt` holding nothing but what the user typed, which is
+    what History previews and what a public share may show - the Settings
+    context (date, location, personal data) must never travel with it.
+    """
+    parts = []
+    if context:
+        parts.append(context.strip() + "\n\n")
+    if brief:
+        parts.append(BRIEF_PREFIX)
+    parts.append(prompt)
+    return "".join(parts)
 
 
 def client_ip():
@@ -492,6 +536,7 @@ def config():
         default=DEFAULT_MODEL,
         usd_pln=USD_TO_PLN,
         max_tokens=MAX_TOKENS,
+        max_context_chars=MAX_CONTEXT_CHARS,
         image_limits={
             "max_images": MAX_IMAGES,
             "max_image_mb": MAX_IMAGE_MB,
@@ -512,6 +557,14 @@ def generate():
     if not prompt:
         return jsonify(error="empty_prompt"), 400
 
+    context = (data.get("context") or "").strip()
+    if len(context) > MAX_CONTEXT_CHARS:
+        return jsonify(
+            error="context_too_long",
+            detail=f"Prompt context is {len(context)} characters, max is {MAX_CONTEXT_CHARS}.",
+        ), 400
+    brief = bool(data.get("brief"))
+
     depth = data.get("depth", DEFAULT_DEPTH)
     if depth not in DEPTH_LEVELS:
         depth = DEFAULT_DEPTH
@@ -521,15 +574,17 @@ def generate():
         code, message = error
         return jsonify(error=code, detail=message), 400
 
+    composed = compose_prompt(prompt, context, brief)
+
     provider = MODELS[model]["provider"]
     start = time.perf_counter()
     try:
         if provider == "google":
-            result = call_gemini(model, prompt, depth, images)
+            result = call_gemini(model, composed, depth, images)
         elif provider == "openai":
-            result = call_openai(model, prompt, depth, images)
+            result = call_openai(model, composed, depth, images)
         else:
-            result = call_anthropic(model, prompt, depth, images)
+            result = call_anthropic(model, composed, depth, images)
     except Exception as exc:  # surface API/network errors to the client
         traceback.print_exc()
         return jsonify(error="api_error", detail=str(exc)), 502
@@ -546,10 +601,12 @@ def generate():
     with get_db() as conn, conn.cursor() as cur:
         cur.execute(
             """INSERT INTO prompts
-               (model, prompt, answer, input_tokens, output_tokens, cost_usd, duration_ms, stop_reason, reasoning)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+               (model, prompt, context, brief, prompt_is_raw, answer,
+                input_tokens, output_tokens, cost_usd, duration_ms, stop_reason, reasoning)
+               VALUES (%s, %s, %s, %s, TRUE, %s, %s, %s, %s, %s, %s, %s)
                RETURNING id, created_at""",
-            (served, prompt, result["answer"], in_tok, out_tok, cost, duration_ms,
+            (served, prompt, context or None, brief, result["answer"],
+             in_tok, out_tok, cost, duration_ms,
              result["stop_reason"], stored_reasoning),
         )
         row = cur.fetchone()
