@@ -97,7 +97,7 @@ MODEL_ORDER = [
 PROVIDER_LABELS = {"anthropic": "Anthropic", "google": "Google Gemini", "openai": "OpenAI"}
 DEFAULT_MODEL = "gemini-3.1-flash-lite"
 
-MAX_TOKENS = 4096
+MAX_TOKENS = 16384
 LOGIN_COOLDOWN = 3.0
 LOGIN_MAX_FAILURES = 5
 LOGIN_LOCKOUT_SECONDS = 5 * 60
