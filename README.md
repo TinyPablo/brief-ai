@@ -22,7 +22,9 @@ persistent session, so you log in once and stay in across tabs.
 - Attach multiple images to a prompt (drag & drop, paste, or the file picker) on any model -
   up to 20 images, 10MB per image, 24MB total per prompt. Limits are enforced both in the
   browser and on the server.
-- Optional prompt context (date, location, personal data) toggled in Settings and stored in the browser.
+- Optional prompt context (date, location, personal data) toggled in Settings and stored in the
+  browser. It's stored in its own database column, never glued into the prompt, so History shows
+  the question you actually asked and the personal bits stay separable.
 - Live cost estimate (input only - text + attached images) from the prompt before sending.
 - Rendered Markdown answers with LaTeX math, syntax-highlighted code, and per-block copy buttons.
 - Shows generation time, input/output tokens, and price (in PLN) per prompt.

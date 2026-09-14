@@ -73,10 +73,13 @@ function buildContext(settings) {
   return lines.join('\n');
 }
 
-function composePrompt(prompt, settings, brief) {
+// The composed text is the server's job now: /api/generate takes `prompt`,
+// `context` and `brief` separately and joins them on the way to the model, so
+// the stored prompt stays exactly what was typed. This local copy exists only
+// to size the live cost estimate.
+function estimateChars(prompt, settings, brief) {
   const ctx = buildContext(settings);
-  const prefix = brief ? 'very brief: ' : '';
-  return (ctx ? ctx + '\n\n' : '') + prefix + prompt;
+  return (ctx ? ctx.length + 2 : 0) + (brief ? 12 : 0) + prompt.length;
 }
 
 if (window.markedKatex) {
@@ -413,15 +416,15 @@ function AskView({ models, model, setModel, depth, setDepth, rate, imageLimits, 
 
   const estimate = useMemo(() => {
     if (!currentModel) return null;
-    const composed = composePrompt(prompt, settings, false);
-    if (!composed.trim() && images.length === 0) return null;
-    const inTok = Math.ceil(composed.length / 4) + imagesTokenTotal;
+    const chars = estimateChars(prompt, settings, false);
+    if (!prompt.trim() && images.length === 0) return null;
+    const inTok = Math.ceil(chars / 4) + imagesTokenTotal;
     return (inTok / 1e6 * currentModel.input) * rate;
   }, [prompt, currentModel, settings, imagesTokenTotal, rate, images.length]);
 
   const doSend = async (brief) => {
     if (!prompt.trim() || loading || overLimit) return;
-    const text = composePrompt(prompt, settings, brief);
+    const context = buildContext(settings);
     setLoading(true);
     setResult(null);
     setError('');
@@ -431,8 +434,10 @@ function AskView({ models, model, setModel, depth, setDepth, rate, imageLimits, 
         method: 'POST',
         body: JSON.stringify({
           model,
-          prompt: text,
+          prompt: prompt.trim(),
           depth,
+          ...(context ? { context } : {}),
+          ...(brief ? { brief: true } : {}),
           ...(images.length ? { images: images.map((im) => ({ data: im.base64, media_type: im.mediaType })) } : {}),
         }),
       });
@@ -902,10 +907,24 @@ function HistoryView({ rate, onUnauth }) {
                 </button>
               </div>
             </div>
-            <div className="text-xs uppercase tracking-wide text-muted mb-1.5">Prompt</div>
-            <div className="bg-panel2 border border-edge rounded-xl px-4 py-3 text-sm whitespace-pre-wrap mb-5">
+            <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-muted mb-1.5">
+              <span>Prompt</span>
+              {detail.brief && <span className="font-mono text-[10px] normal-case text-accent2">brief</span>}
+            </div>
+            <div className="bg-panel2 border border-edge rounded-xl px-4 py-3 text-sm whitespace-pre-wrap">
               {detail.prompt}
             </div>
+            {/* Everything the Settings toggles prepended, kept out of the prompt
+                itself so it never travels with a shared answer. */}
+            {detail.context && (
+              <div className="mt-2 mb-5">
+                <div className="text-xs uppercase tracking-wide text-muted/70 mb-1.5">Context sent with it</div>
+                <div className="bg-panel2/50 border border-edge/60 rounded-xl px-4 py-3 font-mono text-[11px] text-muted whitespace-pre-wrap">
+                  {detail.context}
+                </div>
+              </div>
+            )}
+            {!detail.context && <div className="mb-5" />}
             <div className="text-xs uppercase tracking-wide text-muted mb-2">Answer</div>
             <Meta result={detail} rate={rate} />
             <Markdown text={detail.answer} />
