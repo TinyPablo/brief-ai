@@ -72,7 +72,10 @@ intentionally not committed.
 | id             | serial PK     |                                        |
 | created_at     | timestamptz   | default now()                          |
 | model          | text          | model that actually served the answer  |
-| prompt         | text          |                                        |
+| prompt         | text          | **what the user typed, nothing else**  |
+| context        | text          | Settings context block, or null        |
+| brief          | boolean       | the Brief button's prefix was applied  |
+| prompt_is_raw  | boolean       | false on rows written before the split |
 | answer         | text          |                                        |
 | input_tokens   | integer       |                                        |
 | output_tokens  | integer       |                                        |
@@ -81,13 +84,38 @@ intentionally not committed.
 | stop_reason    | text          | e.g. end_turn, max_tokens, refusal     |
 | reasoning      | text          | reasoning level used, or null if n/a   |
 
+### Why the prompt is stored in pieces
+
+`prompt` holds the raw question and nothing else. The Settings context block
+lives in `context`, the Brief button's prefix is recorded as the `brief` flag,
+and `compose_prompt()` joins all three only on the way to the provider.
+
+This matters because the context block routinely carries personal data (the
+default Settings include location, and the free-form field is meant for things
+like height and weight). Anything that treats the prompt as publishable - the
+History preview, and public share links - reads `prompt` and can never leak the
+rest by accident.
+
+`prompt_is_raw` is the discriminator. Rows written before the split hold the
+whole composed blob in `prompt` and cannot be reliably taken apart again, so
+features that assume a raw prompt must check this flag first. A null `context`
+is *not* a substitute test: it also describes a new row written with every
+Settings toggle switched off.
+
+Schema changes are applied on every boot by the `MIGRATIONS` tuple in
+`backend/app.py` (`ADD COLUMN IF NOT EXISTS`), so a `docker compose up` is the
+whole migration story.
+
 ## HTTP API
 
 - `POST /api/login` `{pin}` → `{ok}` / `401` / `429 {retry_after}`
 - `GET  /api/session` → `{authenticated}`
 - `POST /api/logout` → `{ok}`
-- `GET  /api/config` → `{models:[{id,label,provider,provider_label,input,output,context_window,depth,est_pln}], default, usd_pln, max_tokens, image_limits:{max_images,max_image_mb,max_total_mb,allowed_types}}` *(auth)*
-- `POST /api/generate` `{model, prompt, depth, images?}` → answer + tokens + cost + duration *(auth)*.
+- `GET  /api/config` → `{models:[{id,label,provider,provider_label,input,output,context_window,depth,est_pln}], default, usd_pln, max_tokens, max_context_chars, image_limits:{max_images,max_image_mb,max_total_mb,allowed_types}}` *(auth)*
+- `POST /api/generate` `{model, prompt, context?, brief?, depth, images?}` → answer + tokens + cost + duration *(auth)*.
+  `prompt` is the raw question; `context` is the Settings block (capped at
+  `max_context_chars`); `brief` asks for the "very brief: " prefix. The server joins them
+  with `compose_prompt()` and stores the three separately - see the data model above.
   `images` is an optional array of `{data (base64, no data: prefix), media_type}`, validated
   server-side against `image_limits` before any provider is called.
 - `GET  /api/history?q=&before=` → page of rows (preview, 30 per page, newest first); `q`
@@ -173,23 +201,26 @@ shown in history.
 ## Prompt context (client-side settings)
 
 The Settings tab stores a small object in the browser (`localStorage`, key
-`briefai_settings`) and the frontend prepends context lines above the prompt before
-sending. Nothing about this is server-side; the composed text is what gets stored in
-history.
+`briefai_settings`). `buildContext()` turns it into a plain text block, which the
+frontend sends as the separate `context` field - it is never glued onto the prompt
+client-side.
 
 - `now: <date>, <HH:MM>` - single "Date & time" toggle (default on), from the browser clock.
 - `user is currently in <text>` - editable location (default "Bielsko-Biała").
 - `user data: <text>` - free-form personal context (default off).
 
-Composition: `<context>\n\n` + optional `very brief: ` (Brief button) + the prompt.
-Each part is independently toggleable; all off → just the raw prompt.
+Composition happens server-side in `compose_prompt()`: `<context>\n\n` + optional
+`very brief: ` (Brief button) + the prompt. Each part is independently toggleable;
+all off → just the raw prompt. The preferences themselves stay in the browser; only
+the rendered block travels, and it is capped at `MAX_CONTEXT_CHARS` (8000).
 
 ## Live cost estimate
 
 Shown next to the input as `est_in: X zł`, priced from the model's per-1M input
 rate × `USD_TO_PLN`. **Input only** - the output side isn't estimated, since it
 can't be predicted before the model answers (the exact total cost, input + output,
-is shown after the answer). Input tokens ≈ composed-text length / 4, plus, for any
+is shown after the answer). Input tokens ≈ `estimateChars()` / 4 - the prompt plus
+what the context block and Brief prefix will add once the server joins them - plus, for any
 attached images, `ceil(width/28) * ceil(height/28)` per image (Anthropic's public
 patch-token formula, used as a rough cross-provider guide - exact tokenization
 differs per provider). Thinking/effort overhead is not modelled either.
