@@ -102,19 +102,38 @@ Three providers, selected per model via a `provider` field. Pricing is USD per 1
 tokens (input / output). `context_window` (tokens) is shown in the Ask view's
 session sidebar.
 
-| id                     | label               | provider | input | output | context_window |
-|------------------------|---------------------|----------|-------|--------|-----------------|
-| gemini-2.5-flash-lite  | Gemini 2.5 Flash Lite | google   | 0.10  | 0.40   | 1M              |
-| gemini-3.1-flash-lite  | Gemini 3.1 Flash Lite | google   | 0.25  | 1.50   | 1M              |
-| gemini-3.5-flash       | Gemini 3.5 Flash    | google   | 1.50  | 9.00   | 1M              |
-| claude-haiku-4-5       | Haiku 4.5           | anthropic| 1     | 5      | 200k            |
-| claude-sonnet-4-6      | Sonnet 4.6          | anthropic| 3     | 15     | 200k            |
-| claude-opus-4-8        | Opus 4.8            | anthropic| 5     | 25     | 200k            |
-| claude-fable-5         | Fable 5             | anthropic| 10    | 50     | 200k            |
-| gpt-6-astra            | GPT-6 Astra         | openai   | 10    | 50     | 400k            |
+**`MODELS` is a catalog; `MODEL_ORDER` is the menu.** They are deliberately separate.
+`prompts.model` stores whichever model actually served an answer, so a model that
+leaves the picker must keep its label and its rate forever - otherwise old history
+renders as a raw id and a fallback-served response gets mis-priced. Retiring a model
+means removing it from `MODEL_ORDER` only. `/api/generate` accepts ids from
+`MODEL_ORDER`, not from the whole catalog.
+
+Selectable (`MODEL_ORDER`, in dropdown order):
+
+| id                     | label                 | provider  | input | output | context_window |
+|------------------------|-----------------------|-----------|-------|--------|----------------|
+| gemini-3.1-flash-lite  | Gemini 3.1 Flash Lite | google    | 0.25  | 1.50   | 1M             |
+| gemini-3.8-flash       | Gemini 3.8 Flash      | google    | 1.50  | 7.50   | 1M             |
+| claude-haiku-4-5       | Haiku 4.5             | anthropic | 1     | 5      | 200k           |
+| claude-fable-5         | Fable 5               | anthropic | 10    | 50     | 1M             |
+| gpt-5.4-nano           | GPT-5.4 Nano          | openai    | 0.20  | 1.25   | 400k           |
+| gpt-6-astra            | GPT-6 Astra           | openai    | 10    | 50     | 400k           |
+
+Retired - catalog-only, for history labels and pricing:
+
+| id                     | label                 | provider  | input | output |
+|------------------------|-----------------------|-----------|-------|--------|
+| gemini-2.5-flash-lite  | Gemini 2.5 Flash Lite | google    | 0.10  | 0.40   |
+| gemini-3.5-flash       | Gemini 3.5 Flash      | google    | 1.50  | 9.00   |
+| claude-sonnet-4-6      | Sonnet 4.6            | anthropic | 3     | 15     |
+| claude-opus-4-8        | Opus 4.8              | anthropic | 5     | 25     |
 
 Notes:
 - Default model is **`gemini-3.1-flash-lite`**.
+- Gemini 3.8 Flash is listed at its **standard** rate (1.50 / 7.50), not the
+  introductory 0.75 / 3.75 running until 2026-12-31 - a deliberate choice so
+  estimates never understate what it will cost from January.
 - The UI groups the model dropdown by provider (Anthropic / Google Gemini / OpenAI)
   and shows a per-prompt price estimate next to each model.
 - **Price display is in PLN.** Cost is computed in USD from real token counts, then
@@ -124,30 +143,32 @@ Notes:
   + `ESTIMATE_OUTPUT_TOKENS` (1500) tokens; `/api/config` returns the pre-computed
   `est_pln` per model plus the `usd_pln` rate.
 - Fable 5 always thinks and can be slow; it is called through the beta endpoint
-  with a server-side fallback to Opus 4.8 on a policy refusal. The served model
-  (which may be the fallback) is what gets priced and stored.
+  with `fallbacks: "default"`, which routes by refusal category server-side - so
+  there is no fallback model list to keep in sync with `MODEL_ORDER`. The served
+  model (which may be the fallback) is what gets priced and stored, which is the
+  other reason retired ids stay in the catalog.
 - Anthropic refusals (`stop_reason == "refusal"`) and empty/blocked Gemini
   responses are surfaced as a short note.
 
 ## Reasoning controls (per model)
 
-`/api/config` returns per-model `effort` and `thinking` descriptors, each with an
-`available` flag. The UI always shows an Effort control (dropdown when available,
-read-only value otherwise) and a Thinking switch (interactive when available, locked
-to its fixed value otherwise). Defaults are always the lowest. `/api/generate` takes
-`effort` and `thinking`.
+The UI exposes a single two-state depth switch, **low** / **max**. `/api/config`
+returns `depth: {available}` per model; the switch is shown only when it's `true`,
+and the default is always `low`. `/api/generate` takes `depth`.
 
-- **Anthropic Sonnet 4.6 / Opus 4.8**: `Effort` (low/medium/high/max, default low →
-  `output_config.effort`) + `Thinking` (off/on, default off → `thinking:
-  {type:"adaptive"}` when on).
-- **Anthropic Fable 5**: `Effort` selectable; `Thinking` fixed "On" (always thinks).
-- **Anthropic Haiku 4.5**: no controls (shown as "Default").
-- **Gemini 3.x**: single `Effort` (low/medium/high → `thinking_config.thinking_level`,
-  built defensively; `max` → `high`).
-- **Gemini 2.5**: fixed "Effort: Off" (native thinking off).
+Each model's `reasoning` key maps those two states onto its own provider params.
+A model with no `reasoning` key has no adjustable reasoning at all:
 
-The applied combination is summarised into the `reasoning` column (e.g. `Low`,
-`Medium · thinking`) and shown in history.
+- **Fable 5**: `low` → `output_config.effort: "low"`, `max` → `"max"`; thinking is
+  always on (`thinking: {type: "adaptive"}`), because Fable rejects any other setting.
+- **Haiku 4.5**: no `reasoning` key - the switch is hidden and nothing is sent.
+- **Gemini 3.x**: `low`/`max` → `thinking_config.thinking_level` of `low`/`high`,
+  built defensively (the field is skipped if the SDK doesn't accept it).
+- **OpenAI**: `low`/`max` → `reasoning_effort` of `low`/`xhigh`. Chat Completions
+  caps these models at `xhigh`; the Responses API's `max` is not accepted there.
+
+The applied depth is summarised into the `reasoning` column (`Low` / `Max`) and
+shown in history.
 
 ## Prompt context (client-side settings)
 
