@@ -49,33 +49,37 @@ SYSTEM_PROMPT = (
     "Be concise: no preamble, no filler, just the answer."
 )
 
+# Catalog of every model this instance has ever served. Entries are never
+# removed: `prompts.model` stores the id that actually served each answer, so
+# dropping one would leave old history labelled with a raw id and would strip
+# the pricing needed to value a fallback-served response. Retiring a model
+# means taking it out of MODEL_ORDER below, not out of here.
+#
 # provider: "anthropic" | "google" | "openai"; input/output priced in USD per
 # 1M tokens. "reasoning" (optional) maps the two UI depth states, "low" and
 # "max", to the provider-specific params that give this model its lowest and
 # highest reasoning effort. Models without a "reasoning" key have no depth
 # control at all - they don't support adjustable reasoning.
 MODELS = {
-    "gemini-2.5-flash-lite": {"label": "Gemini 2.5 Flash Lite", "provider": "google", "input": 0.10, "output": 0.40, "context_window": 1_000_000},
     "gemini-3.1-flash-lite": {
         "label": "Gemini 3.1 Flash Lite", "provider": "google", "input": 0.25, "output": 1.50, "context_window": 1_000_000,
         "reasoning": {"low": {"effort": "low"}, "max": {"effort": "high"}},
     },
-    "gemini-3.5-flash": {
-        "label": "Gemini 3.5 Flash", "provider": "google", "input": 1.50, "output": 9.00, "context_window": 1_000_000,
+    "gemini-3.8-flash": {
+        # Google is running an introductory 0.75 / 3.75 until 2026-12-31; the
+        # standard rate below is deliberately used instead, so estimates never
+        # understate what this will cost from January.
+        "label": "Gemini 3.8 Flash", "provider": "google", "input": 1.50, "output": 7.50, "context_window": 1_000_000,
         "reasoning": {"low": {"effort": "low"}, "max": {"effort": "high"}},
     },
     "claude-haiku-4-5": {"label": "Haiku 4.5", "provider": "anthropic", "input": 1.0, "output": 5.0, "context_window": 200_000},
-    "claude-sonnet-4-6": {
-        "label": "Sonnet 4.6", "provider": "anthropic", "input": 3.0, "output": 15.0, "context_window": 200_000,
-        "reasoning": {"low": {"effort": "low", "thinking": False}, "max": {"effort": "max", "thinking": True}},
-    },
-    "claude-opus-4-8": {
-        "label": "Opus 4.8", "provider": "anthropic", "input": 5.0, "output": 25.0, "context_window": 200_000,
-        "reasoning": {"low": {"effort": "low", "thinking": False}, "max": {"effort": "max", "thinking": True}},
-    },
     "claude-fable-5": {
-        "label": "Fable 5", "provider": "anthropic", "input": 10.0, "output": 50.0, "context_window": 200_000,
+        "label": "Fable 5", "provider": "anthropic", "input": 10.0, "output": 50.0, "context_window": 1_000_000,
         "reasoning": {"low": {"effort": "low", "thinking": True}, "max": {"effort": "max", "thinking": True}},
+    },
+    "gpt-5.4-nano": {
+        "label": "GPT-5.4 Nano", "provider": "openai", "input": 0.20, "output": 1.25, "context_window": 400_000,
+        "reasoning": {"low": {"effort": "low"}, "max": {"effort": "xhigh"}},
     },
     "gpt-6-astra": {
         "label": "GPT-6 Astra", "provider": "openai", "input": 10.0, "output": 50.0, "context_window": 400_000,
@@ -83,17 +87,25 @@ MODELS = {
         # (the Responses API's "max" isn't accepted here).
         "reasoning": {"low": {"effort": "low"}, "max": {"effort": "xhigh"}},
     },
+
+    # Retired - kept for history labels, pricing, and fallback lookups only.
+    "gemini-2.5-flash-lite": {"label": "Gemini 2.5 Flash Lite", "provider": "google", "input": 0.10, "output": 0.40},
+    "gemini-3.5-flash": {"label": "Gemini 3.5 Flash", "provider": "google", "input": 1.50, "output": 9.00},
+    "claude-sonnet-4-6": {"label": "Sonnet 4.6", "provider": "anthropic", "input": 3.0, "output": 15.0},
+    "claude-opus-4-8": {"label": "Opus 4.8", "provider": "anthropic", "input": 5.0, "output": 25.0},
 }
+
+# The models offered in the UI, in dropdown order - a subset of MODELS, and the
+# only ids /api/generate accepts.
 MODEL_ORDER = [
-    "gemini-2.5-flash-lite",
     "gemini-3.1-flash-lite",
-    "gemini-3.5-flash",
+    "gemini-3.8-flash",
     "claude-haiku-4-5",
-    "claude-sonnet-4-6",
-    "claude-opus-4-8",
     "claude-fable-5",
+    "gpt-5.4-nano",
     "gpt-6-astra",
 ]
+SELECTABLE_MODELS = set(MODEL_ORDER)
 PROVIDER_LABELS = {"anthropic": "Anthropic", "google": "Google Gemini", "openai": "OpenAI"}
 DEFAULT_MODEL = "gemini-3.1-flash-lite"
 
@@ -284,9 +296,11 @@ def call_anthropic(model, prompt, depth, images=None):
 
     if model == "claude-fable-5":
         try:
+            # "default" routes by refusal category server-side, so there is no
+            # fallback model list to keep in sync with MODEL_ORDER.
             resp = anthropic_client.beta.messages.create(
-                betas=["server-side-fallback-2026-06-01"],
-                fallbacks=[{"model": "claude-opus-4-8"}],
+                betas=["server-side-fallback-2026-07-01"],
+                fallbacks="default",
                 **kwargs,
             )
         except TypeError:
@@ -493,7 +507,7 @@ def generate():
     data = request.get_json(silent=True) or {}
     model = data.get("model", DEFAULT_MODEL)
     prompt = (data.get("prompt") or "").strip()
-    if model not in MODELS:
+    if model not in SELECTABLE_MODELS:
         return jsonify(error="unknown_model"), 400
     if not prompt:
         return jsonify(error="empty_prompt"), 400
