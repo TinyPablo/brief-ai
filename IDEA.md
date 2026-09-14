@@ -106,6 +106,41 @@ Schema changes are applied on every boot by the `MIGRATIONS` tuple in
 `backend/app.py` (`ADD COLUMN IF NOT EXISTS`), so a `docker compose up` is the
 whole migration story.
 
+### Attachments
+
+Two more tables hold the images. They live in Postgres rather than on a volume
+so `db_data` stays the single thing to back up, and so a row can never outlive
+its bytes or vice versa.
+
+`images` - content-addressed, one row per distinct file:
+
+| column           | type        | notes                                       |
+|------------------|-------------|---------------------------------------------|
+| sha256           | text PK     | storage key; equal bytes are stored once    |
+| media_type       | text        | one of `ALLOWED_IMAGE_TYPES`                |
+| bytes            | bytea       | the original upload                         |
+| byte_size        | integer     |                                             |
+| width / height   | integer     | client-reported, layout hints only          |
+| thumb            | bytea       | 512px WebP from the browser, or null        |
+| thumb_media_type | text        |                                             |
+| created_at       | timestamptz |                                             |
+
+`prompt_images` - the join, `(prompt_id, position)` as the primary key so
+attachments come back in the order they were sent. `prompt_id` is
+`ON DELETE CASCADE`, which is what makes "delete it from history and it's gone"
+true. `image_sha` is `ON DELETE RESTRICT`.
+
+**Thumbnails are made in the browser** (`makeThumbnail()` in `app.jsx`: canvas →
+WebP at 512px). That keeps the server from ever decoding untrusted image data,
+and means History pulls tens of kilobytes per attachment instead of megabytes.
+A thumbnail is optional: small images skip it and serve their original in its
+place, as do images uploaded before thumbnails existed.
+
+**Orphan sweep.** Deleting a prompt cascades its join rows but not the bytes -
+deduplication means the image may still belong to another prompt. So
+`delete_orphan_images()` runs right after the delete and drops only rows nothing
+references any more. There is no background garbage collector to forget about.
+
 ## HTTP API
 
 - `POST /api/login` `{pin}` → `{ok}` / `401` / `429 {retry_after}`
@@ -116,12 +151,15 @@ whole migration story.
   `prompt` is the raw question; `context` is the Settings block (capped at
   `max_context_chars`); `brief` asks for the "very brief: " prefix. The server joins them
   with `compose_prompt()` and stores the three separately - see the data model above.
-  `images` is an optional array of `{data (base64, no data: prefix), media_type}`, validated
-  server-side against `image_limits` before any provider is called.
-- `GET  /api/history?q=&before=` → page of rows (preview, 30 per page, newest first); `q`
+  `images` is an optional array of `{data (base64, no data: prefix), media_type, width?,
+  height?, thumb?, thumb_media_type?}`, validated server-side against `image_limits`
+  before any provider is called, then stored (see Attachments above).
+- `GET  /api/history?q=&before=` → page of rows (preview + attachment descriptors, 30 per page, newest first); `q`
   filters prompt+answer (ILIKE), `before` is an id cursor for infinite scroll *(auth)*
-- `GET  /api/history/:id` → full row *(auth)*
-- `DELETE /api/history/:id` → delete a row *(auth)*
+- `GET  /api/history/:id` → full row, plus `images:[{sha,media_type,byte_size,width,height,has_thumb}]` *(auth)*
+- `DELETE /api/history/:id` → delete a row, its join rows, and any image left unreferenced *(auth)*
+- `GET  /api/images/:sha` → the original bytes *(auth)*
+- `GET  /api/images/:sha/thumb` → the thumbnail, falling back to the original when there is none *(auth)*
 - `GET  /api/health` → `{ok}`
 
 ## Models & pricing
@@ -240,9 +278,12 @@ is just a more expensive prompt.
   array, decoded server-side, and passed to whichever provider's SDK as its own
   multi-part content shape (image blocks for Anthropic, `Part.from_bytes` for
   Gemini, `image_url` data URIs for OpenAI's Chat Completions API).
-- Not persisted: images live only for the duration of the request. The `prompts`
-  table has no image column, so History has no way to show them - this was a
-  deliberate scope cut, not an oversight.
+- Persisted, content-addressed, with a browser-made thumbnail alongside - see
+  **Attachments** under the data model. History shows them; deleting a prompt
+  takes its images with it unless another prompt still uses the same file.
+- Limits are per-request: the 24MB total covers the originals, and thumbnails
+  have their own `MAX_TOTAL_THUMB_BYTES` ceiling on top. Both sit under nginx's
+  `client_max_body_size`, which has to allow for base64's ~33% overhead.
 
 ## Adding more providers
 
