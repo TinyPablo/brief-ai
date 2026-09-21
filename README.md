@@ -22,6 +22,8 @@ persistent session, so you log in once and stay in across tabs.
 - Attach multiple images to a prompt (drag & drop, paste, or the file picker) on any model -
   up to 20 images, 10MB per image, 24MB total per prompt. Limits are enforced both in the
   browser and on the server. Attachments are stored and shown again in History.
+- Share a single answer with a public, no-login link straight from History - only the prompt,
+  answer, and any attached images travel with it; revoke it any time.
 - Optional prompt context (date, location, personal data) toggled in Settings and stored in the
   browser. It's stored in its own database column, never glued into the prompt, so History shows
   the question you actually asked and the personal bits stay separable.
