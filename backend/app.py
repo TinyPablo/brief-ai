@@ -929,16 +929,15 @@ def share_history_item(item_id):
     with get_db() as conn, conn.cursor() as cur:
         cur.execute("SELECT share_token FROM prompts WHERE id = %s", (item_id,))
         row = cur.fetchone()
-        if not row:
-            conn.close()
-            return jsonify(error="not_found"), 404
-        token = row[0]
-        if not token:
+        token = row[0] if row else None
+        if row and not token:
             token = secrets.token_urlsafe(16)
             cur.execute(
                 "UPDATE prompts SET share_token = %s WHERE id = %s", (token, item_id)
             )
     conn.close()
+    if not row:
+        return jsonify(error="not_found"), 404
     return jsonify(token=token)
 
 
@@ -964,11 +963,10 @@ def shared_item(token):
             (token,),
         )
         row = cur.fetchone()
-        if not row:
-            conn.close()
-            return jsonify(error="not_found"), 404
-        images = fetch_prompt_images(cur, [row["id"]]).get(row["id"], [])
+        images = fetch_prompt_images(cur, [row["id"]]).get(row["id"], []) if row else []
     conn.close()
+    if not row:
+        return jsonify(error="not_found"), 404
     return jsonify(
         created_at=row["created_at"].isoformat(),
         model_label=MODELS.get(row["model"], {}).get("label", row["model"]),
