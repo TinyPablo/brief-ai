@@ -21,7 +21,7 @@ persistent session, so you log in once and stay in across tabs.
 - Unified reasoning selector (Low-Max) mapped to each provider's own effort/thinking controls.
 - Attach multiple images to a prompt (drag & drop, paste, or the file picker) on any model -
   up to 20 images, 10MB per image, 24MB total per prompt. Limits are enforced both in the
-  browser and on the server.
+  browser and on the server. Attachments are stored and shown again in History.
 - Optional prompt context (date, location, personal data) toggled in Settings and stored in the
   browser. It's stored in its own database column, never glued into the prompt, so History shows
   the question you actually asked and the personal bits stay separable.
@@ -134,6 +134,9 @@ docker volume rm brief-ai_db_data
   Gemini 3.8 Flash is listed at its standard rate, not the introductory one running until
   2026-12-31, so estimates never understate what it will cost from January.
 - Image attachments aren't blocked on any model - attaching to a pricier model just costs
-  more, which is a deliberate tradeoff, not a bug. Attached images are sent with the
-  request but never stored: they're not persisted to the database, so they won't appear
-  when you revisit a prompt in History.
+  more, which is a deliberate tradeoff, not a bug.
+- Attachments are stored in Postgres next to the prompt, so they show up again in History.
+  They're keyed by content hash, which means the same file attached to several prompts is
+  stored once, and a browser-made 512px thumbnail is uploaded alongside so History doesn't
+  have to pull the full-size image. Deleting a prompt deletes its images too, unless
+  another prompt still points at the same file.

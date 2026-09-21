@@ -285,6 +285,33 @@ function imageTokenEstimate(width, height) {
   return Math.ceil(width / IMAGE_TOKEN_TILE_PX) * Math.ceil(height / IMAGE_TOKEN_TILE_PX);
 }
 
+const THUMB_MAX_SIDE = 512;
+const THUMB_QUALITY = 0.8;
+
+// Thumbnails are made here rather than on the server: the backend never has to
+// decode untrusted image data, and History pulls ~50KB per attachment instead
+// of the full upload. Returns null when there is nothing to gain, in which case
+// the original is served in the thumbnail's place.
+function makeThumbnail(img) {
+  const longest = Math.max(img.naturalWidth, img.naturalHeight);
+  if (!longest || longest <= THUMB_MAX_SIDE) return null;
+  const scale = THUMB_MAX_SIDE / longest;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+  try {
+    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+    // toDataURL silently falls back to PNG where WebP isn't supported, so read
+    // the type back out of the result instead of assuming it.
+    const url = canvas.toDataURL('image/webp', THUMB_QUALITY);
+    const match = /^data:([^;,]+);base64,/.exec(url);
+    if (!match) return null;
+    return { base64: url.slice(url.indexOf(',') + 1), mediaType: match[1] };
+  } catch (e) {
+    return null;
+  }
+}
+
 function readImageFile(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -292,7 +319,7 @@ function readImageFile(file) {
     reader.onload = () => {
       const dataUrl = reader.result;
       const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
-      const finish = (width, height) => resolve({
+      const finish = (width, height, thumb) => resolve({
         id: Math.random().toString(36).slice(2),
         base64,
         mediaType: file.type,
@@ -300,14 +327,38 @@ function readImageFile(file) {
         previewUrl: dataUrl,
         width,
         height,
+        thumb,
       });
       const img = new Image();
-      img.onload = () => finish(img.naturalWidth || 1000, img.naturalHeight || 1000);
-      img.onerror = () => finish(1000, 1000); // rough fallback if decoding fails
+      img.onload = () => finish(img.naturalWidth || 1000, img.naturalHeight || 1000, makeThumbnail(img));
+      img.onerror = () => finish(1000, 1000, null); // rough fallback if decoding fails
       img.src = dataUrl;
     };
     reader.readAsDataURL(file);
   });
+}
+
+function imageUrl(sha, thumb) {
+  return '/api/images/' + sha + (thumb ? '/thumb' : '');
+}
+
+function AttachmentStrip({ images, size }) {
+  if (!images || !images.length) return null;
+  const px = size || 56;
+  return (
+    <div className="flex flex-wrap gap-2">
+      {images.map((im) => (
+        <img
+          key={im.sha}
+          src={imageUrl(im.sha, im.has_thumb)}
+          alt=""
+          loading="lazy"
+          style={{ width: px, height: px }}
+          className="border border-edge bg-panel2 object-cover shrink-0"
+        />
+      ))}
+    </div>
+  );
 }
 
 function ImageThumb({ image, onRemove }) {
@@ -438,7 +489,15 @@ function AskView({ models, model, setModel, depth, setDepth, rate, imageLimits, 
           depth,
           ...(context ? { context } : {}),
           ...(brief ? { brief: true } : {}),
-          ...(images.length ? { images: images.map((im) => ({ data: im.base64, media_type: im.mediaType })) } : {}),
+          ...(images.length ? {
+            images: images.map((im) => ({
+              data: im.base64,
+              media_type: im.mediaType,
+              width: im.width,
+              height: im.height,
+              ...(im.thumb ? { thumb: im.thumb.base64, thumb_media_type: im.thumb.mediaType } : {}),
+            })),
+          } : {}),
         }),
       });
       if (res.status === 401) { onUnauth(); return; }
@@ -861,6 +920,11 @@ function HistoryView({ rate, onUnauth }) {
                           <span>{fmtDuration(it.duration_ms)}</span>
                         </div>
                         <div className="text-sm text-[#dcdce2] line-clamp-2">{it.prompt_preview}</div>
+                        {it.images && it.images.length > 0 && (
+                          <div className="mt-2">
+                            <AttachmentStrip images={it.images} size={22} />
+                          </div>
+                        )}
                       </button>
                       <button
                         onClick={(e) => del(it.id, e)}
@@ -914,6 +978,11 @@ function HistoryView({ rate, onUnauth }) {
             <div className="bg-panel2 border border-edge rounded-xl px-4 py-3 text-sm whitespace-pre-wrap">
               {detail.prompt}
             </div>
+            {detail.images && detail.images.length > 0 && (
+              <div className="mt-3">
+                <AttachmentStrip images={detail.images} size={76} />
+              </div>
+            )}
             {/* Everything the Settings toggles prepended, kept out of the prompt
                 itself so it never travels with a shared answer. */}
             {detail.context && (

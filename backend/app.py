@@ -1,5 +1,6 @@
 import base64
 import binascii
+import hashlib
 import os
 import re
 import secrets
@@ -131,6 +132,21 @@ MAX_IMAGE_MB = 10
 MAX_TOTAL_IMAGE_MB = 24
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 
+# Thumbnails are produced in the browser (canvas -> WebP) and uploaded next to
+# the original, so the server never decodes untrusted image data. The cap is
+# generous for a 512px WebP; anything near it means the client sent something
+# other than a thumbnail.
+MAX_THUMB_BYTES = 600_000
+# Thumbnails ride along in the same request as the originals, so they need an
+# aggregate ceiling too - otherwise a client could add MAX_IMAGES * 600KB on
+# top of the 24MB budget and blow past nginx's body limit.
+MAX_TOTAL_THUMB_BYTES = 4_000_000
+ALLOWED_THUMB_TYPES = {"image/webp", "image/jpeg", "image/png"}
+
+# Sanity bounds on the client-reported pixel dimensions. They are only used for
+# layout hints and the token estimate, never for decoding, so loose is fine.
+MAX_IMAGE_DIMENSION = 100_000
+
 # The Settings context block is user-controlled free text arriving from the
 # browser, so it needs an upper bound. Generous enough that nobody hits it by
 # writing about themselves; small enough that it can't be used as a payload.
@@ -158,6 +174,45 @@ CREATE TABLE IF NOT EXISTS prompts (
     prompt_is_raw BOOLEAN NOT NULL DEFAULT FALSE
 )
 """
+
+# Attachments live in Postgres alongside the prompts, so `db_data` stays the
+# single thing to back up and a row can never outlive or outlast its bytes.
+#
+# Images are content-addressed by sha256, which makes deduplication free: the
+# same screenshot attached to five prompts is stored once. `prompt_images` is
+# the join, ordered by `position` so attachments come back in the order they
+# were sent.
+IMAGES_SQL = """
+CREATE TABLE IF NOT EXISTS images (
+    sha256 TEXT PRIMARY KEY,
+    media_type TEXT NOT NULL,
+    bytes BYTEA NOT NULL,
+    byte_size INTEGER NOT NULL,
+    width INTEGER NOT NULL DEFAULT 0,
+    height INTEGER NOT NULL DEFAULT 0,
+    thumb BYTEA,
+    thumb_media_type TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+"""
+
+# ON DELETE CASCADE on prompt_id is what makes "delete it from history and it's
+# gone" true. The image rows themselves are swept separately once nothing
+# references them (see delete_orphan_images) - cascade can't do that job,
+# because deduplication means one image may still belong to another prompt.
+PROMPT_IMAGES_SQL = """
+CREATE TABLE IF NOT EXISTS prompt_images (
+    prompt_id INTEGER NOT NULL REFERENCES prompts(id) ON DELETE CASCADE,
+    image_sha TEXT NOT NULL REFERENCES images(sha256) ON DELETE RESTRICT,
+    position INTEGER NOT NULL,
+    PRIMARY KEY (prompt_id, position)
+)
+"""
+
+PROMPT_IMAGES_INDEX_SQL = (
+    "CREATE INDEX IF NOT EXISTS prompt_images_image_sha_idx "
+    "ON prompt_images (image_sha)"
+)
 
 # Columns added after the table shipped, applied on every boot. `prompt_is_raw`
 # is the discriminator that matters: rows written before the split have the
@@ -205,6 +260,9 @@ def init_db():
     try:
         with conn, conn.cursor() as cur:
             cur.execute(CREATE_SQL)
+            cur.execute(IMAGES_SQL)
+            cur.execute(PROMPT_IMAGES_SQL)
+            cur.execute(PROMPT_IMAGES_INDEX_SQL)
             for statement in MIGRATIONS:
                 cur.execute(statement)
     except psycopg2.Error as exc:
@@ -251,12 +309,56 @@ def client_ip():
     return request.remote_addr or "unknown"
 
 
+def _clamp_dimension(value):
+    """Pixel dimensions are client-reported layout hints, not trusted input -
+    anything unusable becomes 0 rather than an error."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return n if 0 < n <= MAX_IMAGE_DIMENSION else 0
+
+
+def validate_thumb(img, index):
+    """Validate the optional browser-generated thumbnail on one image entry.
+
+    Returns (None, (raw_bytes, media_type)) when present and valid,
+    (None, (None, None)) when absent, or ((code, message), None) on a
+    violation. A missing thumbnail is fine: the original is served instead.
+    """
+    data = img.get("thumb")
+    if not data:
+        return None, (None, None)
+    if not isinstance(data, str):
+        return ("invalid_images", f"image {index} has a non-string thumbnail"), None
+
+    media_type = img.get("thumb_media_type")
+    if media_type not in ALLOWED_THUMB_TYPES:
+        return (
+            "unsupported_image_type",
+            f"image {index} has an unsupported thumbnail type {media_type!r}.",
+        ), None
+    try:
+        raw = base64.b64decode(data, validate=True)
+    except (binascii.Error, ValueError):
+        return ("invalid_images", f"image {index} has a thumbnail that is not valid base64"), None
+    if len(raw) > MAX_THUMB_BYTES:
+        return (
+            "image_too_large",
+            f"image {index} has a {len(raw) / 1000:.0f}KB thumbnail, "
+            f"max is {MAX_THUMB_BYTES // 1000}KB.",
+        ), None
+    return None, (raw, media_type)
+
+
 def validate_images(images):
     """Decode and validate an `images` payload against MAX_IMAGES /
     MAX_IMAGE_MB / MAX_TOTAL_IMAGE_MB / ALLOWED_IMAGE_TYPES.
 
-    Returns (None, decoded_images) on success, where decoded_images is
-    images with "data" replaced by raw decoded bytes; returns
+    Returns (None, decoded_images) on success, where each entry carries the
+    original "data" plus the decoded "raw" bytes, its "sha256" (the storage
+    key - equal bytes are stored once), the client-reported "width"/"height",
+    and an optional decoded "thumb"/"thumb_media_type". Returns
     ((error_code, message), None) on the first violation found.
     """
     if not images:
@@ -271,6 +373,7 @@ def validate_images(images):
 
     decoded = []
     total_bytes = 0
+    total_thumb_bytes = 0
     max_image_bytes = MAX_IMAGE_MB * 1_000_000
     max_total_bytes = MAX_TOTAL_IMAGE_MB * 1_000_000
     for i, img in enumerate(images):
@@ -303,9 +406,110 @@ def validate_images(images):
                 f"max is {MAX_TOTAL_IMAGE_MB}MB.",
             ), None
 
-        decoded.append({"media_type": media_type, "data": data, "raw": raw})
+        error, thumb = validate_thumb(img, i)
+        if error:
+            return error, None
+        thumb_raw, thumb_type = thumb
+        if thumb_raw:
+            total_thumb_bytes += len(thumb_raw)
+            if total_thumb_bytes > MAX_TOTAL_THUMB_BYTES:
+                return (
+                    "images_too_large_total",
+                    f"Thumbnails total {total_thumb_bytes / 1_000_000:.1f}MB, "
+                    f"max is {MAX_TOTAL_THUMB_BYTES // 1_000_000}MB.",
+                ), None
+
+        decoded.append({
+            "media_type": media_type,
+            "data": data,
+            "raw": raw,
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "width": _clamp_dimension(img.get("width")),
+            "height": _clamp_dimension(img.get("height")),
+            "thumb": thumb_raw,
+            "thumb_media_type": thumb_type,
+        })
 
     return None, decoded
+
+
+def store_images(cur, prompt_id, images):
+    """Persist the attachments of one prompt.
+
+    Content addressing makes the image insert idempotent: ON CONFLICT DO
+    NOTHING means re-attaching the same file costs a join row and nothing more.
+    The thumbnail is backfilled if this upload brought one and the stored copy
+    has none (an image first seen through an older client).
+    """
+    for position, img in enumerate(images):
+        cur.execute(
+            """INSERT INTO images
+                   (sha256, media_type, bytes, byte_size, width, height, thumb, thumb_media_type)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT (sha256) DO UPDATE
+                   SET thumb = COALESCE(images.thumb, EXCLUDED.thumb),
+                       thumb_media_type = COALESCE(images.thumb_media_type, EXCLUDED.thumb_media_type)""",
+            (img["sha256"], img["media_type"], psycopg2.Binary(img["raw"]), len(img["raw"]),
+             img["width"], img["height"],
+             psycopg2.Binary(img["thumb"]) if img["thumb"] else None,
+             img["thumb_media_type"]),
+        )
+        cur.execute(
+            "INSERT INTO prompt_images (prompt_id, image_sha, position) VALUES (%s, %s, %s)",
+            (prompt_id, img["sha256"], position),
+        )
+
+
+def delete_orphan_images(cur, shas):
+    """Drop image rows that no prompt points at any more.
+
+    Deleting a prompt cascades its `prompt_images` rows, but not the bytes:
+    deduplication means the same image may still belong to another prompt.
+    This runs right after a delete rather than as a background sweep, so there
+    is no separate garbage collector to forget about.
+    """
+    if not shas:
+        return
+    cur.execute(
+        """DELETE FROM images
+           WHERE sha256 = ANY(%s)
+             AND NOT EXISTS (
+                 SELECT 1 FROM prompt_images WHERE image_sha = images.sha256
+             )""",
+        (list(shas),),
+    )
+
+
+def fetch_prompt_images(cur, prompt_ids):
+    """Attachment metadata (never the bytes) for a batch of prompts.
+
+    Returns {prompt_id: [descriptor, ...]} in attachment order. Batched on
+    purpose - the History list renders thirty rows at a time and must not turn
+    that into thirty queries.
+    """
+    if not prompt_ids:
+        return {}
+    cur.execute(
+        """SELECT pi.prompt_id, pi.image_sha, pi.position,
+                  i.media_type, i.byte_size, i.width, i.height,
+                  (i.thumb IS NOT NULL) AS has_thumb
+           FROM prompt_images pi
+           JOIN images i ON i.sha256 = pi.image_sha
+           WHERE pi.prompt_id = ANY(%s)
+           ORDER BY pi.prompt_id, pi.position""",
+        (list(prompt_ids),),
+    )
+    by_prompt = {}
+    for row in cur.fetchall():
+        by_prompt.setdefault(row["prompt_id"], []).append({
+            "sha": row["image_sha"],
+            "media_type": row["media_type"],
+            "byte_size": row["byte_size"],
+            "width": row["width"],
+            "height": row["height"],
+            "has_thumb": row["has_thumb"],
+        })
+    return by_prompt
 
 
 def require_auth(view):
@@ -610,6 +814,7 @@ def generate():
              result["stop_reason"], stored_reasoning),
         )
         row = cur.fetchone()
+        store_images(cur, row[0], images)
     conn.close()
 
     return jsonify(
@@ -661,6 +866,7 @@ def history():
             params,
         )
         rows = cur.fetchall()
+        images_by_prompt = fetch_prompt_images(cur, [r["id"] for r in rows])
     conn.close()
 
     items = [
@@ -675,6 +881,7 @@ def history():
             "cost_usd": r["cost_usd"],
             "duration_ms": r["duration_ms"],
             "reasoning": r["reasoning"],
+            "images": images_by_prompt.get(r["id"], []),
         }
         for r in rows
     ]
@@ -687,11 +894,13 @@ def history_item(item_id):
     with get_db() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("SELECT * FROM prompts WHERE id = %s", (item_id,))
         row = cur.fetchone()
+        images = fetch_prompt_images(cur, [item_id]).get(item_id, []) if row else []
     conn.close()
     if not row:
         return jsonify(error="not_found"), 404
     row["created_at"] = row["created_at"].isoformat()
     row["model_label"] = MODELS.get(row["model"], {}).get("label", row["model"])
+    row["images"] = images
     return jsonify(row)
 
 
@@ -699,9 +908,60 @@ def history_item(item_id):
 @require_auth
 def delete_history_item(item_id):
     with get_db() as conn, conn.cursor() as cur:
+        # Read the attachments before the row goes, because the cascade takes
+        # the join rows with it and there would be nothing left to look up.
+        cur.execute("SELECT image_sha FROM prompt_images WHERE prompt_id = %s", (item_id,))
+        shas = {r[0] for r in cur.fetchall()}
         cur.execute("DELETE FROM prompts WHERE id = %s", (item_id,))
+        delete_orphan_images(cur, shas)
     conn.close()
     return jsonify(ok=True)
+
+
+IMAGE_SHA_RE = re.compile(r"[0-9a-f]{64}")
+# Content-addressed, so the bytes behind a sha can never change. `private`
+# keeps it out of shared caches while the route is behind auth.
+IMAGE_CACHE_CONTROL = "private, max-age=31536000, immutable"
+
+
+def _serve_image(sha, want_thumb):
+    if not IMAGE_SHA_RE.fullmatch(sha or ""):
+        return jsonify(error="not_found"), 404
+
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT bytes, media_type, thumb, thumb_media_type FROM images WHERE sha256 = %s",
+            (sha,),
+        )
+        row = cur.fetchone()
+    conn.close()
+    if not row:
+        return jsonify(error="not_found"), 404
+
+    data, media_type, thumb, thumb_media_type = row
+    # An image uploaded before thumbnails existed, or one already small enough
+    # that the browser skipped making one, serves its original here.
+    if want_thumb and thumb is not None:
+        data, media_type = thumb, thumb_media_type
+
+    resp = app.response_class(bytes(data), mimetype=media_type)
+    resp.headers["Cache-Control"] = IMAGE_CACHE_CONTROL
+    resp.headers["ETag"] = f'"{sha}{"-t" if want_thumb else ""}"'
+    resp.headers["Content-Security-Policy"] = "default-src 'none'; sandbox"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    return resp
+
+
+@app.get("/api/images/<sha>")
+@require_auth
+def image_full(sha):
+    return _serve_image(sha, want_thumb=False)
+
+
+@app.get("/api/images/<sha>/thumb")
+@require_auth
+def image_thumb(sha):
+    return _serve_image(sha, want_thumb=True)
 
 
 init_db()
