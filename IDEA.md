@@ -146,22 +146,23 @@ references any more. There is no background garbage collector to forget about.
 - `POST /api/login` `{pin}` → `{ok}` / `401` / `429 {retry_after}`
 - `GET  /api/session` → `{authenticated}`
 - `POST /api/logout` → `{ok}`
-- `POST   /api/history/:id/share` → `{token}` - idempotent, returns the existing
-  token if already shared *(auth)*
+- `POST /api/history/:id/share` `{show_prompt?, show_images?}` → `{token, show_prompt, show_images}` - publishes or updates visibility, preserving an existing token *(auth)*
+- `PATCH /api/history/:id/share` `{show_prompt?, show_images?}` → same response, requires an existing share *(auth)*
 - `DELETE /api/history/:id/share` → `{ok}` - revokes the link *(auth)*
 - `GET  /api/share/:token` → `{created_at, model_label, prompt, answer, images}`,
   or `404` - the public read route, no auth
 - `GET  /api/share/:token/images/:sha` / `/thumb` → the bytes, scoped to that
   share's own attachments - no auth
-- `GET  /api/config` → `{models:[{id,label,provider,provider_label,input,output,context_window,depth,est_pln}], default, usd_pln, max_tokens, max_context_chars, image_limits:{max_images,max_image_mb,max_total_mb,allowed_types}}` *(auth)*
-- `POST /api/generate` `{model, prompt, context?, brief?, depth, images?}` → answer + tokens + cost + duration *(auth)*.
+- `GET /s/:token` → app shell with Open Graph metadata, or HTTP 410 for an unavailable link
+- `GET  /api/config` → `{models:[{id,label,provider,provider_label,input,output,context_window,est_pln}], default, usd_pln, max_tokens, max_context_chars, image_limits:{max_images,max_image_mb,max_total_mb,allowed_types}}` *(auth)*
+- `POST /api/generate` `{model, prompt, context?, brief?, images?}` → answer + tokens + cost + duration *(auth)*.
   `prompt` is the raw question; `context` is the Settings block (capped at
   `max_context_chars`); `brief` asks for the "very brief: " prefix. The server joins them
   with `compose_prompt()` and stores the three separately - see the data model above.
   `images` is an optional array of `{data (base64, no data: prefix), media_type, width?,
   height?, thumb?, thumb_media_type?}`, validated server-side against `image_limits`
   before any provider is called, then stored (see Attachments above).
-- `GET  /api/history?q=&before=` → page of rows (preview + attachment descriptors, 30 per page, newest first); `q`
+- `GET  /api/history?q=&before=&shared=true` → page of rows (preview + attachment descriptors, 30 per page, newest first); `q`
   filters prompt+answer (ILIKE), `before` is an id cursor for infinite scroll *(auth)*
 - `GET  /api/history/:id` → full row, plus `images:[{sha,media_type,byte_size,width,height,has_thumb}]` *(auth)*
 - `DELETE /api/history/:id` → delete a row, its join rows, and any image left unreferenced *(auth)*
@@ -223,25 +224,15 @@ Notes:
 - Anthropic refusals (`stop_reason == "refusal"`) and empty/blocked Gemini
   responses are surfaced as a short note.
 
-## Reasoning controls (per model)
+## Reasoning defaults
 
-The UI exposes a single two-state depth switch, **low** / **max**. `/api/config`
-returns `depth: {available}` per model; the switch is shown only when it's `true`,
-and the default is always `low`. `/api/generate` takes `depth`.
-
-Each model's `reasoning` key maps those two states onto its own provider params.
-A model with no `reasoning` key has no adjustable reasoning at all:
-
-- **Fable 5**: `low` → `output_config.effort: "low"`, `max` → `"max"`; thinking is
-  always on (`thinking: {type: "adaptive"}`), because Fable rejects any other setting.
-- **Haiku 4.5**: no `reasoning` key - the switch is hidden and nothing is sent.
-- **Gemini 3.x**: `low`/`max` → `thinking_config.thinking_level` of `low`/`high`,
-  built defensively (the field is skipped if the SDK doesn't accept it).
-- **OpenAI**: `low`/`max` → `reasoning_effort` of `low`/`xhigh`. Chat Completions
-  caps these models at `xhigh`; the Responses API's `max` is not accepted there.
-
-The applied depth is summarised into the `reasoning` column (`Low` / `Max`) and
-shown in history.
+All new generations use server-owned `DEFAULT_DEPTH = "low"`. The frontend has no
+reasoning selector, sends no depth, and does not display reasoning labels in results
+or History. The API ignores a legacy client's requested depth, including `max`.
+Models without adjustable reasoning receive no effort parameter. Other models use
+their existing low mapping; Anthropic adaptive thinking remains enabled where required.
+Historical database values and catalog mappings are retained. `/api/config` no longer
+advertises adjustable depth.
 
 ## Prompt context (client-side settings)
 
@@ -307,10 +298,49 @@ original bytes; public previews keep the token-scoped image URL.
 - The modal traps keyboard focus and locks background scrolling. Loading, missing
   images, and download errors have explicit states.
 
+## Command Deck interface
+
+The original Ask page, header, colors, and typography are retained. Settings uses
+matching corner panels and toggles for date/time, location, and personal context.
+Preferences keep the existing browser storage format. Ask includes quick toggles for
+all three context sections and an Edit settings action. The Ask view stays mounted
+while navigating tabs, preserving the draft, attachments, answer, and in-flight
+request; this is in-memory state, not persistence across page reloads. Settings has
+a Back to prompt action. History and Shared use square corners. Ask has a single
+Brief action: the button and Ctrl/Cmd+Enter both send `brief: true`, and the input
+cost estimate includes the Brief prefix. The backend still accepts older clients
+and retains the existing per-entry brief flag.
+
+The private Shared tab lists active publications using `GET /api/history?shared=true`.
+The filter is applied in SQL before pagination and combines with text search and
+`before`. It supports public preview and the same sharing controls as History.
+Revoking a link removes it from Shared immediately, without deleting the answer.
+On mobile, swiping left reveals Delete, which still requires explicit confirmation.
+
 ## Public share links
 
 Any prompt stored with `prompt_is_raw = true` in History can be turned into a public, no-login link
-(`/s/<token>`) from the app, and revoked the same way.
+(`/s/<token>`) from the result or History, and revoked from the same sharing panel.
+
+The panel loads private settings from `GET /api/history/:id`. Publishing uses
+`POST /api/history/:id/share`; editing an existing publication uses `PATCH` on the
+same route. Both accept optional boolean `show_prompt` and `show_images` values.
+`PATCH` never publishes an unshared answer. Updates lock the prompt row so concurrent
+publishing returns the same token. The UI requires an explicit Publish action;
+images default to excluded for a new publication.
+
+The `share_show_prompt` and `share_show_images` columns default to true in migrations
+to preserve existing links. Hidden questions return `prompt: null`, while hidden
+images return an empty list AND reject original/thumbnail requests, even for known
+hashes. Private History remains unchanged.
+
+nginx proxies `/s/:token` to Flask. Flask serves the same frontend shell with escaped
+Open Graph metadata respecting question visibility. Unavailable HTML pages return
+410 and still show the app's unavailable-link view; JSON/image endpoints return 404.
+Public pages and API responses use `no-store` and `X-Robots-Tag: noindex, nofollow`.
+The backend image now builds from the repository root and copies the frontend shell;
+`.dockerignore` limits the build context to backend sources and that shell. Compose
+handles this automatically. Rebuild both backend and frontend after shell changes.
 
 Legacy entries may contain personal context inside `prompt`, so sharing them
 returns 409. Public links and image routes also reject legacy entries with 404,

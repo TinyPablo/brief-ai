@@ -11,19 +11,21 @@ persistent session, so you log in once and stay in across tabs.
 
 ## Features
 
-- Dark, lightweight single-page interface.
+- Command Deck interface with matching Settings panels and a Shared tab for active public links.
+- Swipe left on a History entry to reveal Delete, then explicitly confirm removal.
 - Google Authenticator (TOTP) login with a persistent session cookie.
 - Brute-force protection: 3-second server-side cooldown per attempt, plus a 5-minute
   lockout after 5 consecutive failures.
 - Model picker grouped by provider - **Anthropic** (Haiku 4.5, Fable 5),
   **Google Gemini** (3.1 Flash Lite, 3.8 Flash), and **OpenAI** (GPT-5.4 Nano, GPT-6 Astra),
   each showing a per-prompt price estimate.
-- Unified reasoning selector (Low-Max) mapped to each provider's own effort/thinking controls.
+- Reasoning uses low effort automatically on supported models, without a UI selector.
 - Attach multiple images to a prompt (drag & drop, paste, or the file picker) on any model -
   up to 20 images, 10MB per image, 24MB total per prompt. Limits are enforced both in the
   browser and on the server. Attachments are stored and shown again in History.
-- Share a single answer with a public, no-login link straight from History - only the prompt,
-  answer, and any attached images travel with it; revoke it any time.
+- Publish from the answer or History with independent question/image visibility controls,
+  editable settings, and revocable links. Public pages include Open Graph metadata and
+  request no indexing; personal settings and diagnostics remain private.
 - Full-size attachment gallery in the composer, History, and shared answers, with zoom,
   original-image download, keyboard navigation, and mobile swipe.
 - Optional prompt context (date, location, personal data) toggled in Settings and stored in the

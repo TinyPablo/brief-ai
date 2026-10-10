@@ -37,6 +37,7 @@ def sent_and_stored(monkeypatch):
 
     def fake_call(model, prompt, depth, images=None):
         captured["prompt_to_model"] = prompt
+        captured["depth"] = depth
         return {
             "answer": "ok", "input_tokens": 10, "output_tokens": 20,
             "stop_reason": "end_turn", "served": model,
@@ -116,3 +117,15 @@ def test_oversized_context_is_refused(sent_and_stored):
     assert res.status_code == 400
     assert res.get_json()["error"] == "context_too_long"
     assert "prompt_to_model" not in sent_and_stored  # refused before the provider call
+
+
+@pytest.mark.parametrize("model", appmod.MODEL_ORDER)
+@pytest.mark.parametrize("requested_depth", [None, "max"])
+def test_generation_always_uses_low_effort(sent_and_stored, model, requested_depth):
+    body = {"model": model, "prompt": "test"}
+    if requested_depth is not None:
+        body["depth"] = requested_depth
+    response = _post(body)
+    assert response.status_code == 200
+    assert sent_and_stored["depth"] == "low"
+    assert response.get_json()["reasoning"] in ("Low", None)

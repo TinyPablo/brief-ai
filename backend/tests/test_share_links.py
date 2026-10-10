@@ -52,17 +52,17 @@ def _client(conn, monkeypatch, authed=True):
 # --- sharing / unsharing ----------------------------------------------------
 
 def test_sharing_an_unshared_prompt_generates_and_stores_a_token(monkeypatch):
-    conn = _ScriptedConn(ones=[(None, True)])
+    conn = _ScriptedConn(ones=[(None, True, True, True)])
     res = _client(conn, monkeypatch).post("/api/history/1/share")
     assert res.status_code == 200
     token = res.get_json()["token"]
     assert token
     update = [c for c in conn.calls if c[0].startswith("UPDATE prompts SET share_token")]
-    assert update and update[0][1] == (token, 1)
+    assert update and update[0][1] == (token, True, True, 1)
 
 
 def test_sharing_an_already_shared_prompt_returns_the_same_token(monkeypatch):
-    conn = _ScriptedConn(ones=[("existing-token", True)])
+    conn = _ScriptedConn(ones=[("existing-token", True, True, True)])
     res = _client(conn, monkeypatch).post("/api/history/1/share")
     assert res.get_json()["token"] == "existing-token"
     assert not [c for c in conn.calls if c[0].startswith("UPDATE")]
@@ -76,7 +76,7 @@ def test_sharing_a_missing_prompt_is_a_404(monkeypatch):
 
 @pytest.mark.parametrize("token", [None, "a" * 22])
 def test_legacy_prompt_cannot_be_shared_even_with_an_existing_token(monkeypatch, token):
-    conn = _ScriptedConn(ones=[(token, False)])
+    conn = _ScriptedConn(ones=[(token, False, True, True)])
     res = _client(conn, monkeypatch).post("/api/history/1/share")
     assert res.status_code == 409
     assert "personal context" in res.get_json()["error"]
@@ -107,6 +107,8 @@ _ROW = {
     "prompt": "what is the capital of poland",
     "answer": "Warsaw.",
     "prompt_is_raw": True,
+    "share_show_prompt": True,
+    "share_show_images": True,
 }
 
 
@@ -156,7 +158,7 @@ def test_shared_payload_excludes_internal_fields(monkeypatch):
 
 def test_shared_image_for_a_different_prompt_is_a_404(monkeypatch):
     # _shared_prompt_id resolves the token, then the ownership check finds no row.
-    conn = _ScriptedConn(ones=[(1, True), None])
+    conn = _ScriptedConn(ones=[(1, True, True), None])
     monkeypatch.setattr(appmod, "get_db", lambda: conn)
     res = appmod.app.test_client().get("/api/share/" + "a" * 22 + "/images/" + "b" * 64)
     assert res.status_code == 404
@@ -164,7 +166,7 @@ def test_shared_image_for_a_different_prompt_is_a_404(monkeypatch):
 
 @pytest.mark.parametrize("suffix", ["", "/thumb"])
 def test_existing_legacy_share_cannot_serve_images(monkeypatch, suffix):
-    conn = _ScriptedConn(ones=[(1, False)])
+    conn = _ScriptedConn(ones=[(1, False, True)])
     monkeypatch.setattr(appmod, "get_db", lambda: conn)
     res = appmod.app.test_client().get(
         "/api/share/" + "a" * 22 + "/images/" + "b" * 64 + suffix
@@ -178,3 +180,90 @@ def test_unknown_share_token_on_image_route_is_a_404(monkeypatch):
     monkeypatch.setattr(appmod, "get_db", lambda: conn)
     res = appmod.app.test_client().get("/api/share/" + "a" * 22 + "/images/" + "b" * 64)
     assert res.status_code == 404
+
+
+@pytest.mark.parametrize("options", [{"show_prompt": "false"}, {"show_images": 0}, {"unexpected": True}, []])
+def test_invalid_share_options_are_rejected(monkeypatch, options):
+    conn = _ScriptedConn()
+    response = _client(conn, monkeypatch).post("/api/history/1/share", json=options)
+    assert response.status_code == 400
+    assert not conn.calls
+
+
+def test_patch_updates_visibility_without_changing_token(monkeypatch):
+    conn = _ScriptedConn(ones=[("a" * 22, True, True, True)])
+    response = _client(conn, monkeypatch).patch("/api/history/1/share", json={"show_prompt": False, "show_images": False})
+    assert response.status_code == 200
+    assert response.get_json() == {"token": "a" * 22, "show_prompt": False, "show_images": False}
+    assert conn.calls[-1][1] == ("a" * 22, False, False, 1)
+
+
+def test_patch_cannot_publish_unshared_answer(monkeypatch):
+    conn = _ScriptedConn(ones=[(None, True, True, True)])
+    response = _client(conn, monkeypatch).patch("/api/history/1/share", json={"show_images": True})
+    assert response.status_code == 404
+    assert len(conn.calls) == 1
+
+
+def test_patch_requires_login(monkeypatch):
+    assert _client(_ScriptedConn(), monkeypatch, authed=False).patch("/api/history/1/share", json={}).status_code == 401
+
+
+def test_hidden_question_and_images_are_not_in_public_payload(monkeypatch):
+    conn = _ScriptedConn(ones=[{**_ROW, "share_show_prompt": False, "share_show_images": False}])
+    monkeypatch.setattr(appmod, "get_db", lambda: conn)
+    response = appmod.app.test_client().get("/api/share/" + "a" * 22)
+    assert response.get_json()["prompt"] is None
+    assert response.get_json()["images"] == []
+    assert len(conn.calls) == 1
+    assert response.headers["Cache-Control"] == "no-store"
+    assert "noindex" in response.headers["X-Robots-Tag"]
+
+
+@pytest.mark.parametrize("suffix", ["", "/thumb"])
+def test_hidden_images_cannot_be_read_with_known_url(monkeypatch, suffix):
+    conn = _ScriptedConn(ones=[(1, True, False)])
+    monkeypatch.setattr(appmod, "get_db", lambda: conn)
+    response = appmod.app.test_client().get("/api/share/" + "a" * 22 + "/images/" + "b" * 64 + suffix)
+    assert response.status_code == 404
+    assert len(conn.calls) == 1
+    assert response.headers["Cache-Control"] == "no-store"
+
+
+@pytest.mark.parametrize("visible", [True, False])
+def test_share_page_metadata_obeys_visibility_and_escapes_html(monkeypatch, visible):
+    conn = _ScriptedConn(ones=[{**_ROW, "prompt": '<script>alert("private")</script>', "share_show_prompt": visible}], alls=[[]])
+    monkeypatch.setattr(appmod, "get_db", lambda: conn)
+    response = appmod.app.test_client().get("/s/" + "a" * 22)
+    html = response.get_data(as_text=True)
+    assert response.status_code == 200
+    assert '<meta property="og:title"' in html
+    assert '<script>alert(' not in html
+    assert ('&lt;script&gt;' in html) == visible
+    assert ('private' in html) == visible
+    assert response.headers["Cache-Control"] == "no-store"
+    assert 'noindex' in response.headers["X-Robots-Tag"]
+
+
+def test_unavailable_share_page_returns_410_with_app_shell(monkeypatch):
+    monkeypatch.setattr(appmod, "get_db", lambda: _ScriptedConn(ones=[None]))
+    response = appmod.app.test_client().get("/s/" + "a" * 22)
+    assert response.status_code == 410
+    assert '/app.jsx' in response.get_data(as_text=True)
+
+
+@pytest.mark.parametrize("shared", [True, False])
+def test_history_shared_filter_combines_with_search_and_pagination(monkeypatch, shared):
+    conn = _ScriptedConn(alls=[[]])
+    response = _client(conn, monkeypatch).get("/api/history?q=hello&before=42" + ("&shared=true" if shared else ""))
+    assert response.status_code == 200
+    sql, params = conn.calls[0]
+    assert ("share_token IS NOT NULL" in sql) == shared
+    assert "id < %s" in sql and "ILIKE" in sql
+    assert params == ["%hello%", "%hello%", 42]
+
+
+def test_shared_history_requires_authentication(monkeypatch):
+    conn = _ScriptedConn()
+    assert _client(conn, monkeypatch, authed=False).get("/api/history?shared=true").status_code == 401
+    assert not conn.calls

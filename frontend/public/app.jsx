@@ -122,7 +122,6 @@ function Meta({ result, rate, onCopy, copied }) {
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[11px] text-muted border-b border-edge pb-3 mb-4">
       <span className="text-accent font-bold">{result.model_label}</span>
-      {result.reasoning && <span>{result.reasoning.toLowerCase()}</span>}
       <span>{fmtDuration(result.duration_ms)}</span>
       <span>{result.input_tokens.toLocaleString()}/{result.output_tokens.toLocaleString()} tok</span>
       <span className="glow text-accent">{zl(result.cost_usd * rate)}</span>
@@ -246,6 +245,125 @@ function Login({ onSuccess }) {
   );
 }
 
+function Modal({ title, onClose, children }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const focus = document.activeElement;
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    ref.current.showModal();
+    return () => {
+      document.body.style.overflow = overflow;
+      if (focus instanceof HTMLElement && focus.isConnected) focus.focus();
+    };
+  }, []);
+  return (
+    <dialog ref={ref} className="deck-modal" aria-label={title} onCancel={(e) => { e.preventDefault(); onClose(); }} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <section>
+        <header className="flex items-center justify-between gap-4 mb-6">
+          <h2 className="deck-heading text-2xl">{title}</h2>
+          <button type="button" aria-label="Close dialog" className="deck-button" onClick={onClose}>×</button>
+        </header>
+        {children}
+      </section>
+    </dialog>
+  );
+}
+
+function ShareDialog({ itemId, onClose, onChanged, onUnauth }) {
+  const [loaded, setLoaded] = useState(false);
+  const [allowed, setAllowed] = useState(false);
+  const [token, setToken] = useState(null);
+  const [showPrompt, setShowPrompt] = useState(true);
+  const [showImages, setShowImages] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    let active = true;
+    api('/history/' + itemId).then(async (res) => {
+      if (res.status === 401) { onUnauth(); onClose(); return; }
+      if (!res.ok) throw new Error('Could not load sharing settings.');
+      const item = await res.json();
+      if (!active) return;
+      setToken(item.share_token);
+      setAllowed(item.prompt_is_raw === true);
+      setShowPrompt(item.share_show_prompt !== false);
+      setShowImages(item.share_token ? item.share_show_images !== false : false);
+      if (!item.prompt_is_raw) setError('This older entry may contain personal context and cannot be shared.');
+      setLoaded(true);
+    }).catch((e) => { if (active) setError(e.message); });
+    return () => { active = false; };
+  }, [itemId]);
+  const save = async (revoke = false) => {
+    setBusy(true); setError(''); setCopied(false);
+    try {
+      const res = await api('/history/' + itemId + '/share', {
+        method: revoke ? 'DELETE' : token ? 'PATCH' : 'POST',
+        ...(!revoke ? { body: JSON.stringify({ show_prompt: showPrompt, show_images: showImages }) } : {}),
+      });
+      if (res.status === 401) { onUnauth(); onClose(); return; }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Could not update sharing.');
+      const next = revoke ? null : data.token;
+      setToken(next); setDirty(false);
+      if (onChanged) onChanged(itemId, next);
+    } catch (e) { setError(e.message || 'Could not update sharing.'); }
+    finally { setBusy(false); }
+  };
+  const url = token ? location.origin + '/s/' + token : '';
+  return (
+    <Modal title="Share answer" onClose={onClose}>
+      <p className="text-muted text-sm mb-5">Review the answer before publishing. Anyone with the link can read it.</p>
+      <fieldset disabled={!loaded || busy || !allowed} className="space-y-4">
+        <label className="sharing-option"><input type="checkbox" checked={showPrompt} onChange={(e) => { setShowPrompt(e.target.checked); setDirty(true); }} /><span>Include question<small>Show the text you asked alongside the answer.</small></span></label>
+        <label className="sharing-option"><input type="checkbox" checked={showImages} onChange={(e) => { setShowImages(e.target.checked); setDirty(true); }} /><span>Include images<small>Allow visitors to view and download attachments.</small></span></label>
+      </fieldset>
+      {token && <div className="mt-6 space-y-2">
+        <label className="text-xs text-muted" htmlFor="public-link">Public link</label>
+        <input id="public-link" className="deck-input w-full" value={url} readOnly onFocus={(e) => e.target.select()} />
+        <button type="button" className="deck-button" onClick={async () => {
+          try { await navigator.clipboard.writeText(url); setCopied(true); }
+          catch { setError('Select and copy the link above. Clipboard access is unavailable.'); }
+        }}>{copied ? 'Copied' : 'Copy link'}</button>
+        <a className="text-accent text-sm ml-4" href={url} target="_blank" rel="noopener noreferrer">Preview ↗</a>
+      </div>}
+      {error && <p role="alert" className="text-red-400 text-sm mt-4">{error}</p>}
+      {dirty && token && <p role="status" className="text-muted text-xs mt-4">Save changes to update the public page.</p>}
+      <div className="flex flex-wrap gap-3 mt-6">
+        <button type="button" className="deck-button primary" disabled={!loaded || busy || !allowed || (token && !dirty)} onClick={() => save()}>{busy ? 'Saving…' : token ? 'Save changes' : 'Publish link'}</button>
+        {token && <button type="button" className="deck-button text-red-400" disabled={busy} onClick={() => save(true)}>Stop sharing</button>}
+      </div>
+    </Modal>
+  );
+}
+
+function SwipeRow({ children, onDelete }) {
+  const [revealed, setRevealed] = useState(false);
+  const start = useRef(null);
+  const swiped = useRef(false);
+  return (
+    <div className="swipe-row">
+      {revealed && <button type="button" className="swipe-delete" onClick={onDelete}>Delete</button>}
+      <div className="swipe-content" style={{ transform: revealed ? 'translateX(-88px)' : undefined }}
+        onTouchStart={(e) => { swiped.current = false; start.current = e.touches.length === 1 ? { x: e.touches[0].clientX, y: e.touches[0].clientY } : null; }}
+        onTouchEnd={(e) => {
+          if (!start.current) return;
+          const dx = e.changedTouches[0].clientX - start.current.x;
+          const dy = e.changedTouches[0].clientY - start.current.y;
+          start.current = null;
+          if (Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.5) { setRevealed(dx < 0); swiped.current = true; }
+        }}
+        onTouchCancel={() => { start.current = null; }}
+        onClickCapture={(e) => {
+          if (swiped.current || revealed) { e.preventDefault(); e.stopPropagation(); if (!swiped.current) setRevealed(false); swiped.current = false; }
+        }}
+      >{children}</div>
+    </div>
+  );
+}
+
 function SharedView({ token }) {
   const [state, setState] = useState('loading'); // loading | ok | not_found
   const [data, setData] = useState(null);
@@ -304,12 +422,10 @@ function SharedView({ token }) {
 
         <div className="corner-panel bg-panel border border-edge rounded-2xl p-5">
           <div className="flex items-center gap-3 text-xs uppercase tracking-wide text-muted mb-1.5">
-            <span>Prompt</span>
+            <span>{data.prompt === null ? 'Shared answer' : 'Question'}</span>
             <span className="ml-auto normal-case text-[11px]">{fmtTime(data.created_at)}</span>
           </div>
-          <div className="bg-panel2 border border-edge rounded-xl px-4 py-3 text-sm whitespace-pre-wrap">
-            {data.prompt}
-          </div>
+          {data.prompt !== null && <div className="bg-panel2 border border-edge rounded-xl px-4 py-3 text-sm whitespace-pre-wrap">{data.prompt}</div>}
           {data.images && data.images.length > 0 && (
             <div className="mt-3">
               <AttachmentStrip images={data.images} size={76} base={'/api/share/' + token + '/images/'} />
@@ -317,7 +433,7 @@ function SharedView({ token }) {
           )}
 
           <div className="flex items-center gap-3 text-xs uppercase tracking-wide text-muted mt-5 mb-2">
-            <span>Answer</span>
+            <span>response</span>
             <span className="ml-auto normal-case text-accent2 text-[11px]">{data.model_label}</span>
           </div>
           <Markdown text={data.answer} />
@@ -335,29 +451,6 @@ function groupByProvider(models) {
     g.items.push(m);
   });
   return groups;
-}
-
-function Switch({ checked, disabled, onChange }) {
-  const seg = (active, label, value) => (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={() => { if (!disabled) onChange(value); }}
-      className={
-        'font-mono text-[11px] px-2.5 py-1 transition-colors '
-        + (active ? 'bg-accent text-accentInk font-bold' : 'text-muted hover:text-white')
-        + (disabled ? ' opacity-50 cursor-not-allowed' : ' cursor-pointer')
-      }
-    >
-      {label}
-    </button>
-  );
-  return (
-    <div role="switch" aria-checked={checked} className="inline-flex items-center border border-edge rounded overflow-hidden shrink-0">
-      {seg(!checked, 'low', false)}
-      {seg(checked, 'max', true)}
-    </div>
-  );
 }
 
 const IMAGE_TOKEN_TILE_PX = 28;
@@ -635,11 +728,10 @@ const DEFAULT_IMAGE_LIMITS = {
   allowed_types: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
 };
 
-function AskView({ models, model, setModel, depth, setDepth, rate, imageLimits, settings, onUnauth }) {
+function AskView({ models, model, setModel, rate, imageLimits, settings, onUnauth }) {
   const limits = imageLimits || DEFAULT_IMAGE_LIMITS;
   const groups = useMemo(() => groupByProvider(models), [models]);
   const currentModel = models.find((m) => m.id === model) || null;
-  const depthCtl = currentModel ? currentModel.depth : null;
   const [prompt, setPrompt] = useState('');
   const [images, setImages] = useState([]);
   const [imageError, setImageError] = useState('');
@@ -648,7 +740,7 @@ function AskView({ models, model, setModel, depth, setDepth, rate, imageLimits, 
   const [error, setError] = useState('');
   const [elapsed, setElapsed] = useState(0);
   const [copied, setCopied] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [sharing, setSharing] = useState(false);
   const fileInputRef = useRef(null);
 
   useEffect(() => {
@@ -715,13 +807,13 @@ function AskView({ models, model, setModel, depth, setDepth, rate, imageLimits, 
 
   const estimate = useMemo(() => {
     if (!currentModel) return null;
-    const chars = estimateChars(prompt, settings, false);
+    const chars = estimateChars(prompt, settings, true);
     if (!prompt.trim() && images.length === 0) return null;
     const inTok = Math.ceil(chars / 4) + imagesTokenTotal;
     return (inTok / 1e6 * currentModel.input) * rate;
   }, [prompt, currentModel, settings, imagesTokenTotal, rate, images.length]);
 
-  const doSend = async (brief) => {
+  const send = async () => {
     if (!prompt.trim() || loading || overLimit) return;
     const context = buildContext(settings);
     setLoading(true);
@@ -734,9 +826,8 @@ function AskView({ models, model, setModel, depth, setDepth, rate, imageLimits, 
         body: JSON.stringify({
           model,
           prompt: prompt.trim(),
-          depth,
           ...(context ? { context } : {}),
-          ...(brief ? { brief: true } : {}),
+          brief: true,
           ...(images.length ? {
             images: images.map((im) => ({
               data: im.base64,
@@ -761,8 +852,6 @@ function AskView({ models, model, setModel, depth, setDepth, rate, imageLimits, 
       setLoading(false);
     }
   };
-
-  const send = () => doSend(false);
 
   const clearAll = () => {
     setPrompt('');
@@ -834,7 +923,6 @@ function AskView({ models, model, setModel, depth, setDepth, rate, imageLimits, 
             ))}
           </select>
 
-          {depthCtl && depthCtl.available && <Switch checked={depth === 'max'} onChange={(v) => setDepth(v ? 'max' : 'low')} />}
 
           <button
             type="button"
@@ -879,46 +967,15 @@ function AskView({ models, model, setModel, depth, setDepth, rate, imageLimits, 
               </svg>
             </button>
 
-            <div className="relative inline-flex">
-              <button
-                onClick={() => doSend(true)}
-                disabled={sendDisabled}
-                className="flex items-center gap-2 bg-accent hover:bg-accent2 disabled:opacity-40 disabled:hover:bg-accent text-accentInk text-[11px] font-bold pl-4 pr-3 py-1.5 transition-colors"
-              >
-                {loading ? <span className="spinner" /> : null}
-                {loading ? 'THINKING' : 'BRIEF'}
-              </button>
-              <button
-                onClick={() => setMenuOpen((o) => !o)}
-                disabled={sendDisabled}
-                title="More send options"
-                className="bg-accent hover:bg-accent2 disabled:opacity-40 disabled:hover:bg-accent text-accentInk px-2 py-1.5 border-l border-accentInk/30 transition-colors"
-              >
-                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="6 9 12 15 18 9" />
-                </svg>
-              </button>
-
-              {menuOpen && (
-                <>
-                  <div className="fixed inset-0 z-20" onClick={() => setMenuOpen(false)} />
-                  <div className="absolute bottom-full right-0 mb-1 w-36 bg-panel2 border border-edge overflow-hidden shadow-lg z-30 font-mono text-[11px]">
-                    <button
-                      onClick={() => { setMenuOpen(false); doSend(true); }}
-                      className="w-full text-left px-3 py-2 hover:bg-white/5 transition-colors"
-                    >
-                      brief
-                    </button>
-                    <button
-                      onClick={() => { setMenuOpen(false); doSend(false); }}
-                      className="w-full text-left px-3 py-2 hover:bg-white/5 transition-colors"
-                    >
-                      send
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
+            <button
+              type="button"
+              onClick={send}
+              disabled={sendDisabled}
+              className="flex items-center gap-2 bg-accent hover:bg-accent2 disabled:opacity-40 disabled:hover:bg-accent text-accentInk text-[11px] font-bold px-4 py-1.5 transition-colors"
+            >
+              {loading ? <span className="spinner" /> : null}
+              {loading ? 'thinking…' : 'brief'}
+            </button>
           </div>
         </div>
       </div>
@@ -942,11 +999,12 @@ function AskView({ models, model, setModel, depth, setDepth, rate, imageLimits, 
         </div>
       )}
 
+      {sharing && result && <ShareDialog itemId={result.id} onClose={() => setSharing(false)} onUnauth={onUnauth} />}
       {result && (
         <div className="corner-panel border border-edge bg-panel fade-in">
           <div className="flex items-center justify-between px-4 py-2 border-b border-edge">
             <span className="font-mono text-[10px] tracking-widest text-muted/80 uppercase">response</span>
-            <span className="font-mono text-[10px] text-good">● 200 ok</span>
+            <button type="button" className="deck-button" onClick={() => setSharing(true)}>Share answer</button>
           </div>
           <div className="p-5">
             <Meta result={result} rate={rate} onCopy={copy} copied={copied} />
@@ -1011,7 +1069,7 @@ function groupHistory(items) {
   return weeks;
 }
 
-function HistoryView({ rate, onUnauth }) {
+function HistoryView({ rate, onUnauth, sharedOnly = false }) {
   const [items, setItems] = useState([]);
   const [q, setQ] = useState('');
   const [loading, setLoading] = useState(false);
@@ -1019,7 +1077,10 @@ function HistoryView({ rate, onUnauth }) {
   const [loaded, setLoaded] = useState(false);
   const [openState, setOpenState] = useState({});
   const [detail, setDetail] = useState(null);
-  const [copiedId, setCopiedId] = useState(null);
+  const [shareItem, setShareItem] = useState(null);
+  const [deleteItem, setDeleteItem] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
 
   const itemsRef = useRef([]);
   const loadingRef = useRef(false);
@@ -1034,6 +1095,7 @@ function HistoryView({ rate, onUnauth }) {
     loadingRef.current = true;
     setLoading(true);
     const params = new URLSearchParams();
+    if (sharedOnly) params.set('shared', 'true');
     if (q.trim()) params.set('q', q.trim());
     if (!reset && itemsRef.current.length) {
       params.set('before', itemsRef.current[itemsRef.current.length - 1].id);
@@ -1052,7 +1114,7 @@ function HistoryView({ rate, onUnauth }) {
       setLoading(false);
       setLoaded(true);
     }
-  }, [q, onUnauth]);
+  }, [q, onUnauth, sharedOnly]);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -1077,45 +1139,16 @@ function HistoryView({ rate, onUnauth }) {
     return () => ob.disconnect();
   }, [hasMore, fetchPage]);
 
-  const shareLink = (token) => location.origin + '/s/' + token;
-
-  const toggleShare = async (it, e) => {
-    e.stopPropagation();
-    try {
-      let token = it.share_token;
-      if (!token) {
-        const res = await api('/history/' + it.id + '/share', { method: 'POST' });
-        if (res.status === 401) { onUnauth(); return; }
-        if (res.status === 409) {
-          window.alert('This older entry cannot be shared because it may contain personal context.');
-          return;
-        }
-        if (!res.ok) return;
-        ({ token } = await res.json());
-        setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, share_token: token } : x)));
-        if (detail && detail.id === it.id) setDetail((d) => ({ ...d, share_token: token }));
-      }
-      await navigator.clipboard.writeText(shareLink(token));
-      setCopiedId(it.id);
-      setTimeout(() => setCopiedId((c) => (c === it.id ? null : c)), 1200);
-    } catch (e2) { /* noop */ }
-  };
-
-  const unshare = async (id, e) => {
-    e.stopPropagation();
-    try {
-      const res = await api('/history/' + id + '/share', { method: 'DELETE' });
-      if (res.status === 401) { onUnauth(); return; }
-      if (res.ok) {
-        setItems((prev) => prev.map((x) => (x.id === id ? { ...x, share_token: null } : x)));
-        if (detail && detail.id === id) setDetail((d) => ({ ...d, share_token: null }));
-      }
-    } catch (e2) { /* noop */ }
+  const toggleShare = (it, e) => { e.stopPropagation(); setShareItem(it.id); };
+  const shareChanged = (id, token) => {
+    setItems((prev) => sharedOnly && !token ? prev.filter((it) => it.id !== id) : prev.map((it) => it.id === id ? { ...it, share_token: token } : it));
+    setDetail((prev) => prev && prev.id === id ? { ...prev, share_token: token } : prev);
+    if (sharedOnly && token && !itemsRef.current.some((it) => it.id === id)) fetchPage(true);
   };
 
   const isOpen = (key, type) => {
     if (openState[key] !== undefined) return openState[key];
-    return type === 'week' ? key === curWeek : key === curDay;
+    return sharedOnly || (type === 'week' ? key === curWeek : key === curDay);
   };
   const toggle = (key, type) => setOpenState((s) => ({ ...s, [key]: !isOpen(key, type) }));
 
@@ -1127,23 +1160,28 @@ function HistoryView({ rate, onUnauth }) {
     } catch (e) { /* noop */ }
   };
 
-  const del = async (id, e) => {
-    e.stopPropagation();
-    if (!window.confirm('Delete this conversation?')) return;
+  const del = (id, e) => { if (e) e.stopPropagation(); setDeleteError(''); setDeleteItem(id); };
+  const confirmDelete = async () => {
+    setDeleting(true); setDeleteError('');
     try {
-      const res = await api('/history/' + id, { method: 'DELETE' });
+      const res = await api('/history/' + deleteItem, { method: 'DELETE' });
       if (res.status === 401) { onUnauth(); return; }
-      if (res.ok) {
-        setItems((prev) => prev.filter((x) => x.id !== id));
-        if (detail && detail.id === id) setDetail(null);
-      }
-    } catch (e2) { /* noop */ }
+      if (!res.ok) throw new Error('Could not delete this answer. Please try again.');
+      setItems((prev) => prev.filter((x) => x.id !== deleteItem));
+      if (detail && detail.id === deleteItem) setDetail(null);
+      setDeleteItem(null);
+    } catch (e) { setDeleteError(e.message); }
+    finally { setDeleting(false); }
   };
 
   const groups = useMemo(() => groupHistory(items), [items]);
 
   return (
     <div className="space-y-3">
+      {sharedOnly && <div className="corner-panel bg-panel border border-edge px-4 py-3 mb-5">
+        <h1 className="font-mono text-xs uppercase tracking-widest text-accent2">Shared answers</h1>
+        <p className="text-sm text-muted mt-2">Your active public links. Open an answer or choose whether its question and images are included.</p>
+      </div>}
       <div className="relative">
         <svg
           className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted pointer-events-none"
@@ -1158,12 +1196,12 @@ function HistoryView({ rate, onUnauth }) {
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="Search"
-          className="w-full bg-panel border border-edge rounded-xl text-sm pl-10 pr-4 py-2.5 outline-none focus:border-accent/60 transition-colors"
+          className="w-full bg-panel border border-edge text-sm pl-10 pr-4 py-2.5 outline-none focus:border-accent/60 transition-colors"
         />
       </div>
 
       {loaded && items.length === 0 && (
-        <div className="text-muted text-sm px-1">{q.trim() ? 'No matches.' : 'No prompts yet.'}</div>
+        <div className="text-muted text-sm px-1">{q.trim() ? 'No matches.' : sharedOnly ? 'No shared answers yet. Publish an answer from Ask or History to see it here.' : 'No prompts yet.'}</div>
       )}
 
       {groups.map((w) => {
@@ -1192,15 +1230,15 @@ function HistoryView({ rate, onUnauth }) {
                   </button>
 
                   {dOpen && day.items.map((it) => (
+                    <SwipeRow key={it.id} onDelete={() => del(it.id)}>
                     <div
                       key={it.id}
-                      className="group flex items-start gap-2 bg-panel border border-edge hover:border-accent/50 rounded-xl px-4 py-3 transition-colors"
+                      className="group flex items-start gap-2 bg-panel border border-edge hover:border-accent/50 px-4 py-3 transition-colors"
                     >
                       <div className="flex-1 min-w-0">
                       <button onClick={() => open(it.id)} className="w-full text-left">
-                        <div className="flex items-center gap-3 text-xs text-muted mb-1.5">
+                        <div className="history-meta flex items-center gap-3 text-xs text-muted mb-1.5">
                           <span className="text-accent2 font-medium">{it.model_label}</span>
-                          {it.reasoning && <span>{it.reasoning}</span>}
                           <span>{fmtTime(it.created_at)}</span>
                           <span className="ml-auto">{zl(it.cost_usd * rate)}</span>
                           <span>{fmtDuration(it.duration_ms)}</span>
@@ -1213,13 +1251,14 @@ function HistoryView({ rate, onUnauth }) {
                           </div>
                         )}
                       </div>
-                      <div className="shrink-0 flex items-center gap-2.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="shrink-0 flex items-center gap-2.5 opacity-100 transition-opacity">
+                        {sharedOnly && it.share_token && <a href={'/s/' + it.share_token} target="_blank" rel="noopener noreferrer" className="text-accent2 text-xs" aria-label="Open public answer">Open ↗</a>}
                         <button
                           onClick={(e) => toggleShare(it, e)}
-                          title={it.share_token ? 'Copy share link' : 'Share'}
+                          title={it.share_token ? 'Manage sharing' : 'Share'}
                           className="font-mono text-[10px] text-muted hover:text-accent2"
                         >
-                          {copiedId === it.id ? 'copied' : it.share_token ? 'link' : 'share'}
+                          {it.share_token ? 'Shared' : 'Share'}
                         </button>
                         <button
                           onClick={(e) => del(it.id, e)}
@@ -1230,6 +1269,7 @@ function HistoryView({ rate, onUnauth }) {
                         </button>
                       </div>
                     </div>
+                    </SwipeRow>
                   ))}
                 </div>
               );
@@ -1241,41 +1281,29 @@ function HistoryView({ rate, onUnauth }) {
       {loading && <div className="flex justify-center py-3"><span className="spinner" /></div>}
       <div ref={sentinelRef} className="h-1" />
 
+      {shareItem !== null && <ShareDialog itemId={shareItem} onClose={() => setShareItem(null)} onChanged={shareChanged} onUnauth={onUnauth} />}
+      {deleteItem !== null && <Modal title="Delete answer?" onClose={() => { if (!deleting) setDeleteItem(null); }}>
+        <p className="text-muted text-sm">This removes the answer and its share link. This cannot be undone.</p>
+        {deleteError && <p role="alert" className="text-red-400 mt-4">{deleteError}</p>}
+        <div className="flex gap-3 mt-6">
+          <button className="deck-button" disabled={deleting} onClick={() => setDeleteItem(null)}>Keep answer</button>
+          <button className="deck-button danger" disabled={deleting} onClick={confirmDelete}>{deleting ? 'Deleting…' : 'Delete permanently'}</button>
+        </div>
+      </Modal>}
+
       {detail && (
         <div
           className="fixed inset-0 z-20 bg-black/70 backdrop-blur-sm grid place-items-center p-4"
           onClick={() => setDetail(null)}
         >
           <div
-            className="bg-panel border border-edge rounded-2xl w-full max-w-2xl max-h-[85vh] overflow-y-auto p-5 fade-in"
+            className="bg-panel border border-edge w-full max-w-2xl max-h-[85vh] overflow-y-auto p-5 fade-in"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between mb-4">
               <span className="text-xs text-muted">{fmtTime(detail.created_at)}</span>
               <div className="flex items-center gap-4">
-                {detail.share_token ? (
-                  <>
-                    <button
-                      onClick={(e) => toggleShare(detail, e)}
-                      className="text-muted hover:text-accent2 text-sm"
-                    >
-                      {copiedId === detail.id ? 'copied' : 'copy link'}
-                    </button>
-                    <button
-                      onClick={(e) => unshare(detail.id, e)}
-                      className="text-muted hover:text-red-400 text-sm"
-                    >
-                      Unshare
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    onClick={(e) => toggleShare(detail, e)}
-                    className="text-muted hover:text-accent2 text-sm"
-                  >
-                    Share
-                  </button>
-                )}
+                <button onClick={(e) => toggleShare(detail, e)} className="text-muted hover:text-accent2 text-sm">{detail.share_token ? 'Manage sharing' : 'Share'}</button>
                 <button
                   onClick={(e) => del(detail.id, e)}
                   className="text-muted hover:text-red-400 text-sm"
@@ -1294,7 +1322,7 @@ function HistoryView({ rate, onUnauth }) {
               <span>Prompt</span>
               {detail.brief && <span className="font-mono text-[10px] normal-case text-accent2">brief</span>}
             </div>
-            <div className="bg-panel2 border border-edge rounded-xl px-4 py-3 text-sm whitespace-pre-wrap">
+            <div className="bg-panel2 border border-edge px-4 py-3 text-sm whitespace-pre-wrap">
               {detail.prompt}
             </div>
             {detail.images && detail.images.length > 0 && (
@@ -1307,7 +1335,7 @@ function HistoryView({ rate, onUnauth }) {
             {detail.context && (
               <div className="mt-2 mb-5">
                 <div className="text-xs uppercase tracking-wide text-muted/70 mb-1.5">Context sent with it</div>
-                <div className="bg-panel2/50 border border-edge/60 rounded-xl px-4 py-3 font-mono text-[11px] text-muted whitespace-pre-wrap">
+                <div className="bg-panel2/50 border border-edge/60 px-4 py-3 font-mono text-[11px] text-muted whitespace-pre-wrap">
                   {detail.context}
                 </div>
               </div>
@@ -1323,65 +1351,60 @@ function HistoryView({ rate, onUnauth }) {
   );
 }
 
-function SettingsView({ settings, setSettings }) {
+function ContextControls({ settings, setSettings, onEdit }) {
+  return (
+    <fieldset className="border border-edge bg-panel px-4 py-3 mb-4">
+      <legend className="sr-only">Prompt context</legend>
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <span className="font-mono text-[10px] uppercase tracking-widest text-muted">Context</span>
+        <button type="button" onClick={onEdit} className="font-mono text-[11px] text-accent2 hover:text-white">Edit settings →</button>
+      </div>
+      <div className="flex flex-wrap gap-x-5 gap-y-3">
+        {[['nowOn', 'Date & time'], ['locOn', 'Location'], ['userOn', 'Personal context']].map(([key, label]) => (
+          <label key={key} className="flex items-center gap-2 text-xs cursor-pointer">
+            <input type="checkbox" className="settings-toggle" checked={settings[key]} onChange={(e) => setSettings((prev) => ({ ...prev, [key]: e.target.checked }))} />
+            <span>{label}</span>
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
+function SettingsView({ settings, setSettings, onBack }) {
   const upd = (patch) => setSettings((s) => ({ ...s, ...patch }));
   return (
-    <div className="bg-panel border border-edge rounded-2xl p-5 space-y-5 fade-in">
-      <p className="text-sm text-muted">
-        Context is attached above every prompt. Toggle what gets sent to the model.
-      </p>
-
-      <label className="flex items-center gap-3 cursor-pointer">
-        <input
-          type="checkbox"
-          checked={settings.nowOn}
-          onChange={(e) => upd({ nowOn: e.target.checked })}
-          className="w-4 h-4 accent-accent"
-        />
-        <span className="text-sm">Date &amp; time (now)</span>
-      </label>
-
-      <div className="space-y-2">
-        <label className="flex items-center gap-3 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={settings.locOn}
-            onChange={(e) => upd({ locOn: e.target.checked })}
-            className="w-4 h-4 accent-accent"
-          />
-          <span className="text-sm">Location</span>
-        </label>
-        <input
-          type="text"
-          value={settings.locText}
-          onChange={(e) => upd({ locText: e.target.value })}
-          disabled={!settings.locOn}
-          placeholder="e.g. Bielsko-Biała"
-          className="w-full bg-panel2 border border-edge rounded-lg text-sm px-3 py-2 outline-none focus:border-accent/60 disabled:opacity-40"
-        />
+    <div className="space-y-5 fade-in max-w-2xl">
+      <button type="button" onClick={onBack} className="font-mono text-xs text-accent2 hover:text-white">← Back to prompt</button>
+      <div className="flex items-center justify-between font-mono text-[10px] uppercase tracking-widest">
+        <h1 className="text-accent2">Prompt context</h1>
+        <span className="text-good">Auto-saved locally</span>
       </div>
-
-      <div className="space-y-2">
-        <label className="flex items-center gap-3 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={settings.userOn}
-            onChange={(e) => upd({ userOn: e.target.checked })}
-            className="w-4 h-4 accent-accent"
-          />
-          <span className="text-sm">User data</span>
+      <p className="text-sm text-muted">Choose the details included with your questions.</p>
+      <section className="settings-section corner-panel">
+        <label className="flex items-center justify-between gap-4 cursor-pointer">
+          <span className="font-mono text-xs uppercase tracking-wider">01 / Date &amp; time</span>
+          <input type="checkbox" className="settings-toggle" checked={settings.nowOn} onChange={(e) => upd({ nowOn: e.target.checked })} />
         </label>
-        <textarea
-          value={settings.userText}
-          onChange={(e) => upd({ userText: e.target.value })}
-          disabled={!settings.userOn}
-          rows={3}
-          placeholder="e.g. 20yo, 181cm, 62kg, bulking ~3 months"
-          className="w-full bg-panel2 border border-edge rounded-lg text-sm px-3 py-2 outline-none resize-y focus:border-accent/60 disabled:opacity-40"
-        />
-      </div>
-
-      <p className="text-xs text-muted/70">Saved automatically in this browser.</p>
+        <p className="mt-3">Use the current date and time from your device.</p>
+      </section>
+      <section className="settings-section corner-panel">
+        <label className="flex items-center justify-between gap-4 cursor-pointer">
+          <span className="font-mono text-xs uppercase tracking-wider">02 / Location</span>
+          <input type="checkbox" className="settings-toggle" checked={settings.locOn} onChange={(e) => upd({ locOn: e.target.checked })} />
+        </label>
+        <p className="mt-3 mb-3">Add a city or region for more relevant answers.</p>
+        <input aria-label="Location context" type="text" value={settings.locText} onChange={(e) => upd({ locText: e.target.value })} disabled={!settings.locOn} placeholder="e.g. Bielsko-Biała" className="deck-input w-full disabled:opacity-40" />
+      </section>
+      <section className="settings-section corner-panel">
+        <label className="flex items-center justify-between gap-4 cursor-pointer">
+          <span className="font-mono text-xs uppercase tracking-wider">03 / Personal context</span>
+          <input type="checkbox" className="settings-toggle" checked={settings.userOn} onChange={(e) => upd({ userOn: e.target.checked })} />
+        </label>
+        <p className="mt-3 mb-3">Preferences and background you want the model to consider.</p>
+        <textarea aria-label="Personal context" value={settings.userText} onChange={(e) => upd({ userText: e.target.value })} disabled={!settings.userOn} rows={4} placeholder="e.g. preferred language, interests, or dietary preferences" className="deck-input w-full resize-y disabled:opacity-40" />
+      </section>
+      <p className="font-mono text-[10px] text-muted">These settings are saved in this browser and sent only when enabled.</p>
     </div>
   );
 }
@@ -1416,7 +1439,6 @@ function Main({ onLogout }) {
   const [model, setModel] = useState('');
   const [rate, setRate] = useState(1);
   const [imageLimits, setImageLimits] = useState(null);
-  const [depth, setDepth] = useState('low');
   const [settings, setSettings] = useState(loadSettings);
 
   useEffect(() => {
@@ -1430,11 +1452,6 @@ function Main({ onLogout }) {
   }, []);
 
   const currentModel = models.find((m) => m.id === model) || null;
-
-  // Reset depth to 'low' whenever the model changes.
-  useEffect(() => {
-    setDepth('low');
-  }, [model]);
 
   useEffect(() => {
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) { /* noop */ }
@@ -1469,6 +1486,7 @@ function Main({ onLogout }) {
           <nav className="hidden sm:flex items-center gap-5 ml-8">
             {tabBtn('ask', 'ask')}
             {tabBtn('history', 'history')}
+            {tabBtn('shared', 'shared')}
             {tabBtn('settings', 'settings')}
           </nav>
           <button
@@ -1488,6 +1506,7 @@ function Main({ onLogout }) {
           <div className="sm:hidden border-t border-edge px-5 py-2 flex flex-col bg-ink/95">
             {tabBtn('ask', 'ask')}
             {tabBtn('history', 'history')}
+            {tabBtn('shared', 'shared')}
             {tabBtn('settings', 'settings')}
             <button
               onClick={logout}
@@ -1500,15 +1519,14 @@ function Main({ onLogout }) {
       </header>
 
       <main className="max-w-4xl mx-auto px-5 py-6">
-        {tab === 'ask' && models.length > 0 && (
-          <div className="flex gap-8 items-start">
+        {models.length > 0 && (
+          <div className={tab === 'ask' ? 'flex gap-8 items-start' : 'hidden'}>
             <div className="flex-1 min-w-0 max-w-2xl">
+              <ContextControls settings={settings} setSettings={setSettings} onEdit={() => setTab('settings')} />
               <AskView
                 models={models}
                 model={model}
                 setModel={setModel}
-                depth={depth}
-                setDepth={setDepth}
                 rate={rate}
                 imageLimits={imageLimits}
                 settings={settings}
@@ -1518,8 +1536,9 @@ function Main({ onLogout }) {
             <SessionSidebar model={currentModel} />
           </div>
         )}
-        {tab === 'history' && <HistoryView rate={rate} onUnauth={unauth} />}
-        {tab === 'settings' && <SettingsView settings={settings} setSettings={setSettings} />}
+        {tab === 'history' && <HistoryView key="history" rate={rate} onUnauth={unauth} />}
+        {tab === 'shared' && <HistoryView key="shared" rate={rate} onUnauth={unauth} sharedOnly />}
+        {tab === 'settings' && <SettingsView settings={settings} setSettings={setSettings} onBack={() => setTab('ask')} />}
       </main>
     </div>
   );
