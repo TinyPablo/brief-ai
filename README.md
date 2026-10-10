@@ -24,6 +24,8 @@ persistent session, so you log in once and stay in across tabs.
   browser and on the server. Attachments are stored and shown again in History.
 - Share a single answer with a public, no-login link straight from History - only the prompt,
   answer, and any attached images travel with it; revoke it any time.
+- Full-size attachment gallery in the composer, History, and shared answers, with zoom,
+  original-image download, keyboard navigation, and mobile swipe.
 - Optional prompt context (date, location, personal data) toggled in Settings and stored in the
   browser. It's stored in its own database column, never glued into the prompt, so History shows
   the question you actually asked and the personal bits stay separable.

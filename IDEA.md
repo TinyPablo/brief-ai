@@ -292,6 +292,21 @@ is just a more expensive prompt.
   have their own `MAX_TOTAL_THUMB_BYTES` ceiling on top. Both sit under nginx's
   `client_max_body_size`, which has to allow for base64's ~33% overhead.
 
+## Image preview gallery
+
+Every attachment thumbnail opens the same custom modal gallery: in the composer,
+History list and detail, and the public share page. Preview and Download use the
+original bytes; public previews keep the token-scoped image URL.
+
+- Zoom from Fit to 4x, with scrolling to inspect enlarged images.
+- Previous/Next buttons, left/right arrow keys, and horizontal touch swipes at Fit.
+- Download the original image (local filename before sending; content-hash filename
+  for stored images).
+- Close via Escape, Close, or a click outside the image. Focus returns to the
+  thumbnail; closing a preview leaves the History detail open.
+- The modal traps keyboard focus and locks background scrolling. Loading, missing
+  images, and download errors have explicit states.
+
 ## Public share links
 
 Any prompt stored with `prompt_is_raw = true` in History can be turned into a public, no-login link

@@ -403,6 +403,7 @@ function readImageFile(file) {
       const finish = (width, height, thumb) => resolve({
         id: Math.random().toString(36).slice(2),
         base64,
+        name: file.name,
         mediaType: file.type,
         sizeBytes: file.size,
         previewUrl: dataUrl,
@@ -423,35 +424,201 @@ function imageUrl(sha, thumb, base) {
   return (base || '/api/images/') + sha + (thumb ? '/thumb' : '');
 }
 
+const ImagePreviewContext = React.createContext(null);
+
+function previewImage(image, base) {
+  const extension = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp' }[image.mediaType || image.media_type] || 'jpg';
+  return {
+    src: image.previewUrl || imageUrl(image.sha, false, base),
+    name: image.name || `image-${image.sha || image.id}.${extension}`,
+  };
+}
+
+function ImagePreviewProvider({ children }) {
+  const [gallery, setGallery] = useState(null);
+  const open = (images, index = 0, base) => {
+    if (images.length) setGallery({ images: images.map((im) => previewImage(im, base)), index });
+  };
+  return (
+    <ImagePreviewContext.Provider value={open}>
+      {children}
+      {gallery && <ImagePreview images={gallery.images} initialIndex={gallery.index} onClose={() => setGallery(null)} />}
+    </ImagePreviewContext.Provider>
+  );
+}
+
+function ImagePreview({ images, initialIndex, onClose }) {
+  const [index, setIndex] = useState(initialIndex);
+  const [zoom, setZoom] = useState(1);
+  const [status, setStatus] = useState('loading');
+  const [naturalSize, setNaturalSize] = useState({ width: 1, height: 1 });
+  const [viewportSize, setViewportSize] = useState({ width: 1, height: 1 });
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState('');
+  const dialogRef = useRef(null);
+  const viewportRef = useRef(null);
+  const swipeRef = useRef(null);
+  const mountedRef = useRef(true);
+  const current = images[index];
+  const fitScale = Math.min(Math.max(1, viewportSize.width - 32) / naturalSize.width, Math.max(1, viewportSize.height - 32) / naturalSize.height, 1);
+  const displayWidth = naturalSize.width * fitScale * zoom;
+  const displayHeight = naturalSize.height * fitScale * zoom;
+  const move = (delta) => {
+    setIndex((i) => (i + delta + images.length) % images.length);
+    setZoom(1);
+    setStatus('loading');
+    setDownloadError('');
+    if (viewportRef.current) viewportRef.current.scrollTo(0, 0);
+  };
+
+  useEffect(() => {
+    mountedRef.current = true;
+    const dialog = dialogRef.current;
+    const previousFocus = document.activeElement;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    dialog.showModal();
+    const observer = new ResizeObserver(([entry]) => {
+      setViewportSize({ width: entry.contentRect.width, height: entry.contentRect.height });
+    });
+    observer.observe(viewportRef.current);
+    const onKeyDown = (event) => {
+      if (images.length > 1 && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+        event.preventDefault();
+        move(event.key === 'ArrowLeft' ? -1 : 1);
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      mountedRef.current = false;
+      observer.disconnect();
+      dialog.close();
+      document.body.style.overflow = previousOverflow;
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
+    };
+  }, []);
+
+  const download = async () => {
+    setDownloading(true);
+    setDownloadError('');
+    try {
+      const response = await fetch(current.src, { credentials: 'same-origin' });
+      if (!response.ok) throw new Error('download_failed');
+      const blob = await response.blob();
+      if (!blob.type.startsWith('image/')) throw new Error('not_an_image');
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = current.name;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch {
+      if (mountedRef.current) setDownloadError('Could not download this image. Please try again.');
+    } finally {
+      if (mountedRef.current) setDownloading(false);
+    }
+  };
+
+  return (
+    <dialog
+      ref={dialogRef}
+      className="image-preview"
+      aria-label="Image preview"
+      onCancel={(e) => { e.preventDefault(); onClose(); }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <header className="image-preview-toolbar">
+        <div className="image-preview-title">
+          <span className="font-mono text-accent text-xs">IMAGE {index + 1} / {images.length}</span>
+          <span className="image-preview-name" title={current.name}>{current.name}</span>
+        </div>
+        <div className="image-preview-actions">
+          <button type="button" aria-label="Zoom out" disabled={zoom === 1 || status !== 'ready'} onClick={() => setZoom((z) => Math.max(1, z - 0.5))}>−</button>
+          <button type="button" aria-label="Fit image to screen" onClick={() => { setZoom(1); viewportRef.current.scrollTo(0, 0); }}>{zoom === 1 ? 'Fit' : `${Math.round(zoom * 100)}%`}</button>
+          <button type="button" aria-label="Zoom in" disabled={zoom === 4 || status !== 'ready'} onClick={() => setZoom((z) => Math.min(4, z + 0.5))}>+</button>
+          <button type="button" onClick={download} disabled={downloading || status !== 'ready'}>{downloading ? 'Saving…' : 'Download'}</button>
+          <button type="button" aria-label="Close image preview" autoFocus onClick={onClose}>✕</button>
+        </div>
+      </header>
+      <div
+        ref={viewportRef}
+        className="image-preview-viewport"
+        onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+        onTouchStart={(e) => {
+          swipeRef.current = zoom === 1 && e.touches.length === 1
+            ? { x: e.touches[0].clientX, y: e.touches[0].clientY } : null;
+        }}
+        onTouchEnd={(e) => {
+          const start = swipeRef.current;
+          swipeRef.current = null;
+          if (!start || images.length < 2) return;
+          const dx = e.changedTouches[0].clientX - start.x;
+          const dy = e.changedTouches[0].clientY - start.y;
+          if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) move(dx < 0 ? 1 : -1);
+        }}
+        onTouchCancel={() => { swipeRef.current = null; }}
+      >
+        <div className="image-preview-canvas" style={{ width: Math.max(viewportSize.width, displayWidth), height: Math.max(viewportSize.height, displayHeight) }} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+          {status === 'loading' && <span className="spinner" role="status" aria-label="Loading image" />}
+          {status === 'error' && <p role="alert">This image is no longer available.</p>}
+          <img
+            key={index}
+            src={current.src}
+            alt={current.name}
+            draggable="false"
+            style={{ display: status === 'ready' ? 'block' : 'none', width: displayWidth, height: displayHeight }}
+            onLoad={(e) => { setNaturalSize({ width: e.currentTarget.naturalWidth, height: e.currentTarget.naturalHeight }); setStatus('ready'); }}
+            onError={() => setStatus('error')}
+          />
+        </div>
+      </div>
+      <footer className="image-preview-footer">
+        <button type="button" aria-label="Previous image" disabled={images.length < 2} onClick={() => move(-1)}>← Previous</button>
+        <span role="status">{downloadError || 'Esc to close · Scroll to explore when zoomed'}</span>
+        <button type="button" aria-label="Next image" disabled={images.length < 2} onClick={() => move(1)}>Next →</button>
+      </footer>
+    </dialog>
+  );
+}
+
 function AttachmentStrip({ images, size, base }) {
+  const openPreview = React.useContext(ImagePreviewContext);
   if (!images || !images.length) return null;
   const px = size || 56;
   return (
     <div className="flex flex-wrap gap-2">
-      {images.map((im) => (
-        <img
-          key={im.sha}
-          src={imageUrl(im.sha, im.has_thumb, base)}
-          alt=""
-          loading="lazy"
-          style={{ width: px, height: px }}
-          className="border border-edge bg-panel2 object-cover shrink-0"
-        />
+      {images.map((im, index) => (
+        <button type="button" key={im.sha + '-' + index} className="image-preview-trigger" aria-label={`Preview image ${index + 1}`} onClick={(e) => { e.stopPropagation(); openPreview(images, index, base); }}>
+          <img
+            src={imageUrl(im.sha, im.has_thumb, base)}
+            alt=""
+            loading="lazy"
+            style={{ width: px, height: px }}
+            className="border border-edge bg-panel2 object-cover shrink-0"
+          />
+        </button>
       ))}
     </div>
   );
 }
 
-function ImageThumb({ image, onRemove }) {
+function ImageThumb({ image, images, index, onRemove }) {
+  const openPreview = React.useContext(ImagePreviewContext);
   return (
     <div className="flex flex-col items-center gap-1">
-      <div className="relative w-[52px] h-[52px] border border-edge bg-panel2 overflow-hidden">
-        <img src={image.previewUrl} alt="" className="w-full h-full object-cover" />
+      <div className="relative w-[52px] h-[52px] border border-edge bg-panel2">
+        <button type="button" className="image-preview-trigger w-full h-full" aria-label={`Preview image ${index + 1}`} onClick={() => openPreview(images, index)}>
+          <img src={image.previewUrl} alt="" className="w-full h-full object-cover" />
+        </button>
         <button
           type="button"
           onClick={() => onRemove(image.id)}
           title="Remove"
-          className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-ink border-l border-b border-edge flex items-center justify-center text-muted hover:text-white"
+          aria-label={`Remove image ${index + 1}`}
+          className="absolute -top-1 -right-1 w-4 h-4 bg-ink border border-edge flex items-center justify-center text-muted hover:text-white"
         >
           <svg width="8" height="8" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.6"><path d="M6 6l12 12M18 6L6 18" /></svg>
         </button>
@@ -646,8 +813,8 @@ function AskView({ models, model, setModel, depth, setDepth, rate, imageLimits, 
 
         {images.length > 0 && (
           <div className="flex flex-wrap gap-2.5 px-4 pt-3 pb-1">
-            {images.map((im) => (
-              <ImageThumb key={im.id} image={im} onRemove={removeImage} />
+            {images.map((im, index) => (
+              <ImageThumb key={im.id} image={im} images={images} index={index} onRemove={removeImage} />
             ))}
           </div>
         )}
@@ -1029,7 +1196,8 @@ function HistoryView({ rate, onUnauth }) {
                       key={it.id}
                       className="group flex items-start gap-2 bg-panel border border-edge hover:border-accent/50 rounded-xl px-4 py-3 transition-colors"
                     >
-                      <button onClick={() => open(it.id)} className="flex-1 min-w-0 text-left">
+                      <div className="flex-1 min-w-0">
+                      <button onClick={() => open(it.id)} className="w-full text-left">
                         <div className="flex items-center gap-3 text-xs text-muted mb-1.5">
                           <span className="text-accent2 font-medium">{it.model_label}</span>
                           {it.reasoning && <span>{it.reasoning}</span>}
@@ -1038,12 +1206,13 @@ function HistoryView({ rate, onUnauth }) {
                           <span>{fmtDuration(it.duration_ms)}</span>
                         </div>
                         <div className="text-sm text-[#dcdce2] line-clamp-2">{it.prompt_preview}</div>
+                      </button>
                         {it.images && it.images.length > 0 && (
                           <div className="mt-2">
                             <AttachmentStrip images={it.images} size={22} />
                           </div>
                         )}
-                      </button>
+                      </div>
                       <div className="shrink-0 flex items-center gap-2.5 opacity-0 group-hover:opacity-100 transition-opacity">
                         <button
                           onClick={(e) => toggleShare(it, e)}
@@ -1383,4 +1552,4 @@ function App() {
     : <Login onSuccess={() => setAuthed(true)} />;
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+ReactDOM.createRoot(document.getElementById('root')).render(<ImagePreviewProvider><App /></ImagePreviewProvider>);
