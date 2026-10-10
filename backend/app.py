@@ -226,6 +226,9 @@ MIGRATIONS = (
     "ALTER TABLE prompts ADD COLUMN IF NOT EXISTS context TEXT",
     "ALTER TABLE prompts ADD COLUMN IF NOT EXISTS brief BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE prompts ADD COLUMN IF NOT EXISTS prompt_is_raw BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE prompts ADD COLUMN IF NOT EXISTS share_token TEXT",
+    "CREATE UNIQUE INDEX IF NOT EXISTS prompts_share_token_idx "
+    "ON prompts (share_token) WHERE share_token IS NOT NULL",
 )
 
 app = Flask(__name__)
@@ -858,7 +861,8 @@ def history():
     with get_db() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             f"""SELECT id, created_at, model, LEFT(prompt, 140) AS prompt_preview,
-                       input_tokens, output_tokens, cost_usd, duration_ms, reasoning
+                       input_tokens, output_tokens, cost_usd, duration_ms, reasoning,
+                       share_token
                 FROM prompts
                 {where}
                 ORDER BY id DESC
@@ -881,6 +885,7 @@ def history():
             "cost_usd": r["cost_usd"],
             "duration_ms": r["duration_ms"],
             "reasoning": r["reasoning"],
+            "share_token": r["share_token"],
             "images": images_by_prompt.get(r["id"], []),
         }
         for r in rows
@@ -916,6 +921,104 @@ def delete_history_item(item_id):
         delete_orphan_images(cur, shas)
     conn.close()
     return jsonify(ok=True)
+
+
+@app.post("/api/history/<int:item_id>/share")
+@require_auth
+def share_history_item(item_id):
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT share_token, prompt_is_raw FROM prompts WHERE id = %s", (item_id,))
+        row = cur.fetchone()
+        token = row[0] if row else None
+        if row and row[1] and not token:
+            token = secrets.token_urlsafe(16)
+            cur.execute(
+                "UPDATE prompts SET share_token = %s WHERE id = %s", (token, item_id)
+            )
+    conn.close()
+    if not row:
+        return jsonify(error="not_found"), 404
+    if not row[1]:
+        return jsonify(error="Legacy entries cannot be shared because they may contain personal context."), 409
+    return jsonify(token=token)
+
+
+@app.delete("/api/history/<int:item_id>/share")
+@require_auth
+def unshare_history_item(item_id):
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE prompts SET share_token = NULL WHERE id = %s", (item_id,))
+    conn.close()
+    return jsonify(ok=True)
+
+
+SHARE_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{16,32}")
+
+
+@app.get("/api/share/<token>")
+def shared_item(token):
+    if not SHARE_TOKEN_RE.fullmatch(token or ""):
+        return jsonify(error="not_found"), 404
+    with get_db() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            "SELECT id, created_at, model, prompt, answer, prompt_is_raw FROM prompts WHERE share_token = %s",
+            (token,),
+        )
+        row = cur.fetchone()
+        # Old prompts may include personal context, even if a token already exists.
+        if row and not row["prompt_is_raw"]:
+            row = None
+        images = fetch_prompt_images(cur, [row["id"]]).get(row["id"], []) if row else []
+    conn.close()
+    if not row:
+        return jsonify(error="not_found"), 404
+    return jsonify(
+        created_at=row["created_at"].isoformat(),
+        model_label=MODELS.get(row["model"], {}).get("label", row["model"]),
+        prompt=row["prompt"],
+        answer=row["answer"],
+        images=images,
+    )
+
+
+def _shared_prompt_id(token):
+    """The prompt id behind a share token, or None if the token doesn't resolve."""
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id, prompt_is_raw FROM prompts WHERE share_token = %s", (token,))
+        row = cur.fetchone()
+    conn.close()
+    return row[0] if row and row[1] else None
+
+
+def _serve_shared_image(token, sha, want_thumb):
+    if not SHARE_TOKEN_RE.fullmatch(token or ""):
+        return jsonify(error="not_found"), 404
+    prompt_id = _shared_prompt_id(token)
+    if prompt_id is None:
+        return jsonify(error="not_found"), 404
+    # A share token only unlocks the images actually attached to *that* prompt -
+    # content-addressed shas are otherwise guessable, so this join is the only
+    # thing standing between the token and every image ever uploaded.
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM prompt_images WHERE prompt_id = %s AND image_sha = %s",
+            (prompt_id, sha),
+        )
+        belongs = cur.fetchone() is not None
+    conn.close()
+    if not belongs:
+        return jsonify(error="not_found"), 404
+    return _serve_image(sha, want_thumb)
+
+
+@app.get("/api/share/<token>/images/<sha>")
+def shared_image_full(token, sha):
+    return _serve_shared_image(token, sha, want_thumb=False)
+
+
+@app.get("/api/share/<token>/images/<sha>/thumb")
+def shared_image_thumb(token, sha):
+    return _serve_shared_image(token, sha, want_thumb=True)
 
 
 IMAGE_SHA_RE = re.compile(r"[0-9a-f]{64}")

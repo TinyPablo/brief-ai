@@ -93,8 +93,8 @@ and `compose_prompt()` joins all three only on the way to the provider.
 This matters because the context block routinely carries personal data (the
 default Settings include location, and the free-form field is meant for things
 like height and weight). Anything that treats the prompt as publishable - the
-History preview, and public share links - reads `prompt` and can never leak the
-rest by accident.
+History preview, and public share links (see **Public share links** below) -
+reads `prompt` and can never leak the rest by accident.
 
 `prompt_is_raw` is the discriminator. Rows written before the split hold the
 whole composed blob in `prompt` and cannot be reliably taken apart again, so
@@ -146,6 +146,13 @@ references any more. There is no background garbage collector to forget about.
 - `POST /api/login` `{pin}` → `{ok}` / `401` / `429 {retry_after}`
 - `GET  /api/session` → `{authenticated}`
 - `POST /api/logout` → `{ok}`
+- `POST   /api/history/:id/share` → `{token}` - idempotent, returns the existing
+  token if already shared *(auth)*
+- `DELETE /api/history/:id/share` → `{ok}` - revokes the link *(auth)*
+- `GET  /api/share/:token` → `{created_at, model_label, prompt, answer, images}`,
+  or `404` - the public read route, no auth
+- `GET  /api/share/:token/images/:sha` / `/thumb` → the bytes, scoped to that
+  share's own attachments - no auth
 - `GET  /api/config` → `{models:[{id,label,provider,provider_label,input,output,context_window,depth,est_pln}], default, usd_pln, max_tokens, max_context_chars, image_limits:{max_images,max_image_mb,max_total_mb,allowed_types}}` *(auth)*
 - `POST /api/generate` `{model, prompt, context?, brief?, depth, images?}` → answer + tokens + cost + duration *(auth)*.
   `prompt` is the raw question; `context` is the Settings block (capped at
@@ -284,6 +291,34 @@ is just a more expensive prompt.
 - Limits are per-request: the 24MB total covers the originals, and thumbnails
   have their own `MAX_TOTAL_THUMB_BYTES` ceiling on top. Both sit under nginx's
   `client_max_body_size`, which has to allow for base64's ~33% overhead.
+
+## Public share links
+
+Any prompt stored with `prompt_is_raw = true` in History can be turned into a public, no-login link
+(`/s/<token>`) from the app, and revoked the same way.
+
+Legacy entries may contain personal context inside `prompt`, so sharing them
+returns 409. Public links and image routes also reject legacy entries with 404,
+even if they already have a share token. They remain available in private History.
+
+- `prompts.share_token` - `NULL` until shared, a `secrets.token_urlsafe(16)`
+  once it is. A unique partial index (`WHERE share_token IS NOT NULL`) keeps
+  tokens collision-free without constraining the common unshared case.
+- Sharing is idempotent: asking to share an already-shared prompt returns its
+  existing token rather than minting a new one, so a link someone already has
+  keeps working.
+- `GET /api/share/:token` needs no session. Its payload is deliberately
+  narrow - `prompt`, `answer`, `model_label`, `created_at`, `images` - and
+  never `context`, `cost_usd`, `input_tokens`, `output_tokens`, `duration_ms`
+  or `reasoning`, which stay internal diagnostics.
+- Attached images are served from `/api/share/:token/images/:sha`, scoped to
+  that prompt's own `prompt_images` rows - a token can't be used to pull an
+  arbitrary sha's bytes just because content hashes are otherwise guessable,
+  even though the underlying bytes are the same content-addressed rows the
+  authenticated `/api/images/:sha` route serves.
+- Unsharing just clears `share_token` back to `NULL`; deleting the prompt
+  (which already cascades its `prompt_images` and orphan-sweeps the bytes)
+  takes the link with it too, since the row it pointed at is gone.
 
 ## Adding more providers
 

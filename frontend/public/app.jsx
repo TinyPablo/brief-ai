@@ -246,6 +246,87 @@ function Login({ onSuccess }) {
   );
 }
 
+function SharedView({ token }) {
+  const [state, setState] = useState('loading'); // loading | ok | not_found
+  const [data, setData] = useState(null);
+  const [authenticated, setAuthenticated] = useState(false);
+
+  useEffect(() => {
+    api('/share/' + token)
+      .then((res) => {
+        if (!res.ok) { setState('not_found'); return; }
+        return res.json().then((d) => { setData(d); setState('ok'); });
+      })
+      .catch(() => setState('not_found'));
+  }, [token]);
+
+  useEffect(() => {
+    if (state !== 'not_found') return;
+    let active = true;
+    api('/session')
+      .then((res) => res.ok ? res.json() : null)
+      .then((session) => {
+        if (active) setAuthenticated(session?.authenticated === true);
+      })
+      .catch(() => { if (active) setAuthenticated(false); });
+    return () => { active = false; };
+  }, [state, token]);
+
+  if (state === 'loading') {
+    return <div className="min-h-screen grid place-items-center"><div className="spinner" /></div>;
+  }
+
+  if (state === 'not_found') {
+    return (
+      <div className="min-h-screen grid place-items-center px-6 text-center">
+        <div>
+          <div className="font-mono text-lg mb-2">brief_ai<span className="text-accent glow">$</span></div>
+          <p className="text-muted text-sm">This link is no longer available.</p>
+          {authenticated && (
+            <a
+              href="/"
+              className="inline-flex mt-5 px-4 py-2 border border-edge rounded-lg text-sm text-accent hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent transition-colors"
+            >
+              Back to app
+            </a>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen px-4 py-10 flex justify-center">
+      <div className="w-full max-w-2xl fade-in">
+        <div className="font-mono text-sm mb-6 text-muted">
+          brief_ai<span className="text-accent glow">$</span>
+        </div>
+
+        <div className="corner-panel bg-panel border border-edge rounded-2xl p-5">
+          <div className="flex items-center gap-3 text-xs uppercase tracking-wide text-muted mb-1.5">
+            <span>Prompt</span>
+            <span className="ml-auto normal-case text-[11px]">{fmtTime(data.created_at)}</span>
+          </div>
+          <div className="bg-panel2 border border-edge rounded-xl px-4 py-3 text-sm whitespace-pre-wrap">
+            {data.prompt}
+          </div>
+          {data.images && data.images.length > 0 && (
+            <div className="mt-3">
+              <AttachmentStrip images={data.images} size={76} base={'/api/share/' + token + '/images/'} />
+            </div>
+          )}
+
+          <div className="flex items-center gap-3 text-xs uppercase tracking-wide text-muted mt-5 mb-2">
+            <span>Answer</span>
+            <span className="ml-auto normal-case text-accent2 text-[11px]">{data.model_label}</span>
+          </div>
+          <Markdown text={data.answer} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function groupByProvider(models) {
   const groups = [];
   models.forEach((m) => {
@@ -338,11 +419,11 @@ function readImageFile(file) {
   });
 }
 
-function imageUrl(sha, thumb) {
-  return '/api/images/' + sha + (thumb ? '/thumb' : '');
+function imageUrl(sha, thumb, base) {
+  return (base || '/api/images/') + sha + (thumb ? '/thumb' : '');
 }
 
-function AttachmentStrip({ images, size }) {
+function AttachmentStrip({ images, size, base }) {
   if (!images || !images.length) return null;
   const px = size || 56;
   return (
@@ -350,7 +431,7 @@ function AttachmentStrip({ images, size }) {
       {images.map((im) => (
         <img
           key={im.sha}
-          src={imageUrl(im.sha, im.has_thumb)}
+          src={imageUrl(im.sha, im.has_thumb, base)}
           alt=""
           loading="lazy"
           style={{ width: px, height: px }}
@@ -771,6 +852,7 @@ function HistoryView({ rate, onUnauth }) {
   const [loaded, setLoaded] = useState(false);
   const [openState, setOpenState] = useState({});
   const [detail, setDetail] = useState(null);
+  const [copiedId, setCopiedId] = useState(null);
 
   const itemsRef = useRef([]);
   const loadingRef = useRef(false);
@@ -827,6 +909,42 @@ function HistoryView({ rate, onUnauth }) {
     ob.observe(el);
     return () => ob.disconnect();
   }, [hasMore, fetchPage]);
+
+  const shareLink = (token) => location.origin + '/s/' + token;
+
+  const toggleShare = async (it, e) => {
+    e.stopPropagation();
+    try {
+      let token = it.share_token;
+      if (!token) {
+        const res = await api('/history/' + it.id + '/share', { method: 'POST' });
+        if (res.status === 401) { onUnauth(); return; }
+        if (res.status === 409) {
+          window.alert('This older entry cannot be shared because it may contain personal context.');
+          return;
+        }
+        if (!res.ok) return;
+        ({ token } = await res.json());
+        setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, share_token: token } : x)));
+        if (detail && detail.id === it.id) setDetail((d) => ({ ...d, share_token: token }));
+      }
+      await navigator.clipboard.writeText(shareLink(token));
+      setCopiedId(it.id);
+      setTimeout(() => setCopiedId((c) => (c === it.id ? null : c)), 1200);
+    } catch (e2) { /* noop */ }
+  };
+
+  const unshare = async (id, e) => {
+    e.stopPropagation();
+    try {
+      const res = await api('/history/' + id + '/share', { method: 'DELETE' });
+      if (res.status === 401) { onUnauth(); return; }
+      if (res.ok) {
+        setItems((prev) => prev.map((x) => (x.id === id ? { ...x, share_token: null } : x)));
+        if (detail && detail.id === id) setDetail((d) => ({ ...d, share_token: null }));
+      }
+    } catch (e2) { /* noop */ }
+  };
 
   const isOpen = (key, type) => {
     if (openState[key] !== undefined) return openState[key];
@@ -926,13 +1044,22 @@ function HistoryView({ rate, onUnauth }) {
                           </div>
                         )}
                       </button>
-                      <button
-                        onClick={(e) => del(it.id, e)}
-                        title="Delete"
-                        className="shrink-0 text-muted hover:text-red-400 text-sm opacity-0 group-hover:opacity-100 transition-opacity"
-                      >
-                        ✕
-                      </button>
+                      <div className="shrink-0 flex items-center gap-2.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={(e) => toggleShare(it, e)}
+                          title={it.share_token ? 'Copy share link' : 'Share'}
+                          className="font-mono text-[10px] text-muted hover:text-accent2"
+                        >
+                          {copiedId === it.id ? 'copied' : it.share_token ? 'link' : 'share'}
+                        </button>
+                        <button
+                          onClick={(e) => del(it.id, e)}
+                          title="Delete"
+                          className="text-muted hover:text-red-400 text-sm"
+                        >
+                          ✕
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -957,6 +1084,29 @@ function HistoryView({ rate, onUnauth }) {
             <div className="flex items-center justify-between mb-4">
               <span className="text-xs text-muted">{fmtTime(detail.created_at)}</span>
               <div className="flex items-center gap-4">
+                {detail.share_token ? (
+                  <>
+                    <button
+                      onClick={(e) => toggleShare(detail, e)}
+                      className="text-muted hover:text-accent2 text-sm"
+                    >
+                      {copiedId === detail.id ? 'copied' : 'copy link'}
+                    </button>
+                    <button
+                      onClick={(e) => unshare(detail.id, e)}
+                      className="text-muted hover:text-red-400 text-sm"
+                    >
+                      Unshare
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    onClick={(e) => toggleShare(detail, e)}
+                    className="text-muted hover:text-accent2 text-sm"
+                  >
+                    Share
+                  </button>
+                )}
                 <button
                   onClick={(e) => del(detail.id, e)}
                   className="text-muted hover:text-red-400 text-sm"
@@ -1210,12 +1360,19 @@ function App() {
   const [ready, setReady] = useState(false);
   const [authed, setAuthed] = useState(false);
 
+  const shareMatch = window.location.pathname.match(/^\/s\/([A-Za-z0-9_-]+)/);
+
   useEffect(() => {
+    if (shareMatch) return;
     api('/session')
       .then((r) => r.json())
       .then((d) => { setAuthed(!!d.authenticated); setReady(true); })
       .catch(() => setReady(true));
   }, []);
+
+  if (shareMatch) {
+    return <SharedView token={shareMatch[1]} />;
+  }
 
   if (!ready) {
     return <div className="min-h-screen grid place-items-center"><div className="spinner" /></div>;
