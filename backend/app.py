@@ -1,6 +1,8 @@
 import base64
 import binascii
 import hashlib
+from html import escape
+from pathlib import Path
 import os
 import re
 import secrets
@@ -57,7 +59,7 @@ SYSTEM_PROMPT = (
 # means taking it out of MODEL_ORDER below, not out of here.
 #
 # provider: "anthropic" | "google" | "openai"; input/output priced in USD per
-# 1M tokens. "reasoning" (optional) maps the two UI depth states, "low" and
+# 1M tokens. "reasoning" (optional) retains the effort mappings for "low" and
 # "max", to the provider-specific params that give this model its lowest and
 # highest reasoning effort. Models without a "reasoning" key have no depth
 # control at all - they don't support adjustable reasoning.
@@ -115,8 +117,8 @@ LOGIN_COOLDOWN = 3.0
 LOGIN_MAX_FAILURES = 5
 LOGIN_LOCKOUT_SECONDS = 5 * 60
 
-# The two reasoning-depth states exposed in the UI. Each reasoning-capable
-# model maps these to its own provider-specific effort/thinking params.
+# Retain historical levels for stored reasoning labels. New requests always
+# use DEFAULT_DEPTH, mapped to provider-specific effort/thinking params.
 DEPTH_LEVELS = ["low", "max"]
 DEFAULT_DEPTH = "low"
 
@@ -227,6 +229,8 @@ MIGRATIONS = (
     "ALTER TABLE prompts ADD COLUMN IF NOT EXISTS brief BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE prompts ADD COLUMN IF NOT EXISTS prompt_is_raw BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE prompts ADD COLUMN IF NOT EXISTS share_token TEXT",
+    "ALTER TABLE prompts ADD COLUMN IF NOT EXISTS share_show_prompt BOOLEAN NOT NULL DEFAULT TRUE",
+    "ALTER TABLE prompts ADD COLUMN IF NOT EXISTS share_show_images BOOLEAN NOT NULL DEFAULT TRUE",
     "CREATE UNIQUE INDEX IF NOT EXISTS prompts_share_token_idx "
     "ON prompts (share_token) WHERE share_token IS NOT NULL",
 )
@@ -735,7 +739,6 @@ def config():
             "input": cfg["input"],
             "output": cfg["output"],
             "context_window": cfg["context_window"],
-            "depth": {"available": bool(cfg.get("reasoning"))},
             "est_pln": estimate_pln(cfg),
         })
     return jsonify(
@@ -772,9 +775,8 @@ def generate():
         ), 400
     brief = bool(data.get("brief"))
 
-    depth = data.get("depth", DEFAULT_DEPTH)
-    if depth not in DEPTH_LEVELS:
-        depth = DEFAULT_DEPTH
+    # A single server-owned effort level, including requests from older clients.
+    depth = DEFAULT_DEPTH
 
     error, images = validate_images(data.get("images"))
     if error:
@@ -846,6 +848,8 @@ def history():
 
     conditions = []
     params = []
+    if request.args.get("shared") == "true":
+        conditions.append("share_token IS NOT NULL")
     if query:
         like = "%" + query + "%"
         conditions.append("(prompt ILIKE %s OR answer ILIKE %s)")
@@ -924,23 +928,38 @@ def delete_history_item(item_id):
 
 
 @app.post("/api/history/<int:item_id>/share")
+@app.patch("/api/history/<int:item_id>/share")
 @require_auth
 def share_history_item(item_id):
+    options = request.get_json(silent=True) if request.data else {}
+    if not isinstance(options, dict) or any(
+        key not in {"show_prompt", "show_images"} or type(value) is not bool
+        for key, value in options.items()
+    ):
+        return jsonify(error="Share options must be boolean values."), 400
     with get_db() as conn, conn.cursor() as cur:
-        cur.execute("SELECT share_token, prompt_is_raw FROM prompts WHERE id = %s", (item_id,))
+        cur.execute(
+            "SELECT share_token, prompt_is_raw, share_show_prompt, share_show_images "
+            "FROM prompts WHERE id = %s FOR UPDATE", (item_id,)
+        )
         row = cur.fetchone()
         token = row[0] if row else None
-        if row and row[1] and not token:
-            token = secrets.token_urlsafe(16)
+        show_prompt = options.get("show_prompt", row[2] if row else True)
+        show_images = options.get("show_images", row[3] if row else True)
+        missing_share = request.method == "PATCH" and not token
+        if row and row[1] and not missing_share and (not token or options):
+            token = token or secrets.token_urlsafe(16)
             cur.execute(
-                "UPDATE prompts SET share_token = %s WHERE id = %s", (token, item_id)
+                "UPDATE prompts SET share_token = %s, share_show_prompt = %s, "
+                "share_show_images = %s WHERE id = %s",
+                (token, show_prompt, show_images, item_id),
             )
     conn.close()
-    if not row:
+    if not row or missing_share:
         return jsonify(error="not_found"), 404
     if not row[1]:
         return jsonify(error="Legacy entries cannot be shared because they may contain personal context."), 409
-    return jsonify(token=token)
+    return jsonify(token=token, show_prompt=show_prompt, show_images=show_images)
 
 
 @app.delete("/api/history/<int:item_id>/share")
@@ -955,39 +974,74 @@ def unshare_history_item(item_id):
 SHARE_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{16,32}")
 
 
-@app.get("/api/share/<token>")
-def shared_item(token):
+def public_share(token):
     if not SHARE_TOKEN_RE.fullmatch(token or ""):
-        return jsonify(error="not_found"), 404
+        return None
     with get_db() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
-            "SELECT id, created_at, model, prompt, answer, prompt_is_raw FROM prompts WHERE share_token = %s",
+            "SELECT id, created_at, model, prompt, answer, prompt_is_raw, "
+            "share_show_prompt, share_show_images FROM prompts WHERE share_token = %s",
             (token,),
         )
         row = cur.fetchone()
-        # Old prompts may include personal context, even if a token already exists.
         if row and not row["prompt_is_raw"]:
             row = None
-        images = fetch_prompt_images(cur, [row["id"]]).get(row["id"], []) if row else []
+        images = (fetch_prompt_images(cur, [row["id"]]).get(row["id"], [])
+                  if row and row["share_show_images"] else [])
     conn.close()
     if not row:
-        return jsonify(error="not_found"), 404
-    return jsonify(
+        return None
+    return dict(
         created_at=row["created_at"].isoformat(),
         model_label=MODELS.get(row["model"], {}).get("label", row["model"]),
-        prompt=row["prompt"],
+        prompt=row["prompt"] if row["share_show_prompt"] else None,
         answer=row["answer"],
         images=images,
     )
 
 
+@app.get("/api/share/<token>")
+def shared_item(token):
+    data = public_share(token)
+    return jsonify(data) if data else (jsonify(error="not_found"), 404)
+
+
+@app.get("/s/<token>")
+def shared_page(token):
+    data = public_share(token)
+    title = (data["prompt"] or "An answer from Brief AI")[:120] if data else "Link unavailable · Brief AI"
+    description = "Shared answer from " + data["model_label"] if data else "This link is no longer available."
+    # Use the same application shell as nginx, with server-rendered preview metadata.
+    shell = Path(__file__).with_name("share-shell.html")
+    if not shell.exists():
+        shell = Path(__file__).parent.parent / "frontend/public/index.html"
+    html = shell.read_text()
+    html = html.replace("<title>Brief AI</title>", "<title>" + escape(title) + "</title>")
+    metadata = (
+        '<meta name="robots" content="noindex, nofollow">'
+        '<meta property="og:type" content="article">'
+        '<meta property="og:title" content="' + escape(title, quote=True) + '">'
+        '<meta property="og:description" content="' + escape(description, quote=True) + '">'
+        '<meta property="og:site_name" content="Brief AI">'
+    )
+    return html.replace("</head>", metadata + "</head>"), 200 if data else 410
+
+
+@app.after_request
+def private_share_response(response):
+    if request.path.startswith(("/s/", "/api/share/")):
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
+    return response
+
+
 def _shared_prompt_id(token):
     """The prompt id behind a share token, or None if the token doesn't resolve."""
     with get_db() as conn, conn.cursor() as cur:
-        cur.execute("SELECT id, prompt_is_raw FROM prompts WHERE share_token = %s", (token,))
+        cur.execute("SELECT id, prompt_is_raw, share_show_images FROM prompts WHERE share_token = %s", (token,))
         row = cur.fetchone()
     conn.close()
-    return row[0] if row and row[1] else None
+    return row[0] if row and row[1] and row[2] else None
 
 
 def _serve_shared_image(token, sha, want_thumb):

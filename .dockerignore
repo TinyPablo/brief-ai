@@ -1,0 +1,9 @@
+*
+!backend/
+!backend/**
+!frontend/
+!frontend/public/
+!frontend/public/index.html
+**/__pycache__/
+**/.pytest_cache/
+**/.venv/
