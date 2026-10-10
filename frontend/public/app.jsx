@@ -249,6 +249,7 @@ function Login({ onSuccess }) {
 function SharedView({ token }) {
   const [state, setState] = useState('loading'); // loading | ok | not_found
   const [data, setData] = useState(null);
+  const [authenticated, setAuthenticated] = useState(false);
 
   useEffect(() => {
     api('/share/' + token)
@@ -258,6 +259,18 @@ function SharedView({ token }) {
       })
       .catch(() => setState('not_found'));
   }, [token]);
+
+  useEffect(() => {
+    if (state !== 'not_found') return;
+    let active = true;
+    api('/session')
+      .then((res) => res.ok ? res.json() : null)
+      .then((session) => {
+        if (active) setAuthenticated(session?.authenticated === true);
+      })
+      .catch(() => { if (active) setAuthenticated(false); });
+    return () => { active = false; };
+  }, [state, token]);
 
   if (state === 'loading') {
     return <div className="min-h-screen grid place-items-center"><div className="spinner" /></div>;
@@ -269,6 +282,14 @@ function SharedView({ token }) {
         <div>
           <div className="font-mono text-lg mb-2">brief_ai<span className="text-accent glow">$</span></div>
           <p className="text-muted text-sm">This link is no longer available.</p>
+          {authenticated && (
+            <a
+              href="/"
+              className="inline-flex mt-5 px-4 py-2 border border-edge rounded-lg text-sm text-accent hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent transition-colors"
+            >
+              Back to app
+            </a>
+          )}
         </div>
       </div>
     );
