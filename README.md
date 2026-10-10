@@ -11,18 +11,26 @@ persistent session, so you log in once and stay in across tabs.
 
 ## Features
 
-- Dark, lightweight single-page interface.
+- Command Deck interface with matching Settings panels and a Shared tab for active public links.
+- Swipe left on a History entry to reveal Delete, then explicitly confirm removal.
 - Google Authenticator (TOTP) login with a persistent session cookie.
 - Brute-force protection: 3-second server-side cooldown per attempt, plus a 5-minute
   lockout after 5 consecutive failures.
-- Model picker grouped by provider - **Anthropic** (Haiku 4.5, Sonnet 4.6, Opus 4.8, Fable 5),
-  **Google Gemini** (2.5 Flash Lite, 3.1 Flash Lite, 3.5 Flash), and **OpenAI** (GPT-6 Astra),
+- Model picker grouped by provider - **Anthropic** (Haiku 4.5, Fable 5),
+  **Google Gemini** (3.1 Flash Lite, 3.8 Flash), and **OpenAI** (GPT-5.4 Nano, GPT-6 Astra),
   each showing a per-prompt price estimate.
-- Unified reasoning selector (Low-Max) mapped to each provider's own effort/thinking controls.
+- Reasoning uses low effort automatically on supported models, without a UI selector.
 - Attach multiple images to a prompt (drag & drop, paste, or the file picker) on any model -
   up to 20 images, 10MB per image, 24MB total per prompt. Limits are enforced both in the
-  browser and on the server.
-- Optional prompt context (date, location, personal data) toggled in Settings and stored in the browser.
+  browser and on the server. Attachments are stored and shown again in History.
+- Publish from the answer or History with independent question/image visibility controls,
+  editable settings, and revocable links. Public pages include Open Graph metadata and
+  request no indexing; personal settings and diagnostics remain private.
+- Full-size attachment gallery in the composer, History, and shared answers, with zoom,
+  original-image download, keyboard navigation, and mobile swipe.
+- Optional prompt context (date, location, personal data) toggled in Settings and stored in the
+  browser. It's stored in its own database column, never glued into the prompt, so History shows
+  the question you actually asked and the personal bits stay separable.
 - Live cost estimate (input only - text + attached images) from the prompt before sending.
 - Rendered Markdown answers with LaTeX math, syntax-highlighted code, and per-block copy buttons.
 - Shows generation time, input/output tokens, and price (in PLN) per prompt.
@@ -119,13 +127,22 @@ docker volume rm brief-ai_db_data
 
 ## Notes
 
-- Fable 5 always reasons and can take longer than the other models. It runs with a
-  server-side fallback to Opus 4.8 if a request is refused; the served model is the
-  one shown and priced.
+- Fable 5 always reasons and can take longer than the other models. It runs with
+  Anthropic's default server-side fallback routing if a request is refused; the served
+  model is the one shown and priced.
+- The model picker shows six models, but `MODELS` in `backend/app.py` is a larger catalog
+  that also keeps retired ones. History stores whichever model served each answer, so a
+  retired id still needs its label and its rate to render and price correctly - retiring a
+  model means removing it from `MODEL_ORDER`, never from `MODELS`.
 - Prices are computed from published per-model rates and shown in PLN at a fixed USD→PLN
   rate. The per-model estimate in the dropdown assumes a typical prompt of ~1000 input +
   ~1500 output tokens. Both the rate and the assumption are constants in `backend/app.py`.
+  Gemini 3.8 Flash is listed at its standard rate, not the introductory one running until
+  2026-12-31, so estimates never understate what it will cost from January.
 - Image attachments aren't blocked on any model - attaching to a pricier model just costs
-  more, which is a deliberate tradeoff, not a bug. Attached images are sent with the
-  request but never stored: they're not persisted to the database, so they won't appear
-  when you revisit a prompt in History.
+  more, which is a deliberate tradeoff, not a bug.
+- Attachments are stored in Postgres next to the prompt, so they show up again in History.
+  They're keyed by content hash, which means the same file attached to several prompts is
+  stored once, and a browser-made 512px thumbnail is uploaded alongside so History doesn't
+  have to pull the full-size image. Deleting a prompt deletes its images too, unless
+  another prompt still points at the same file.

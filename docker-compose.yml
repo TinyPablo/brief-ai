@@ -15,7 +15,9 @@ services:
       retries: 10
 
   backend:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     restart: unless-stopped
     environment:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}

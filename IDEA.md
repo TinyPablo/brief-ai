@@ -72,7 +72,10 @@ intentionally not committed.
 | id             | serial PK     |                                        |
 | created_at     | timestamptz   | default now()                          |
 | model          | text          | model that actually served the answer  |
-| prompt         | text          |                                        |
+| prompt         | text          | **what the user typed, nothing else**  |
+| context        | text          | Settings context block, or null        |
+| brief          | boolean       | the Brief button's prefix was applied  |
+| prompt_is_raw  | boolean       | false on rows written before the split |
 | answer         | text          |                                        |
 | input_tokens   | integer       |                                        |
 | output_tokens  | integer       |                                        |
@@ -81,19 +84,90 @@ intentionally not committed.
 | stop_reason    | text          | e.g. end_turn, max_tokens, refusal     |
 | reasoning      | text          | reasoning level used, or null if n/a   |
 
+### Why the prompt is stored in pieces
+
+`prompt` holds the raw question and nothing else. The Settings context block
+lives in `context`, the Brief button's prefix is recorded as the `brief` flag,
+and `compose_prompt()` joins all three only on the way to the provider.
+
+This matters because the context block routinely carries personal data (the
+default Settings include location, and the free-form field is meant for things
+like height and weight). Anything that treats the prompt as publishable - the
+History preview, and public share links (see **Public share links** below) -
+reads `prompt` and can never leak the rest by accident.
+
+`prompt_is_raw` is the discriminator. Rows written before the split hold the
+whole composed blob in `prompt` and cannot be reliably taken apart again, so
+features that assume a raw prompt must check this flag first. A null `context`
+is *not* a substitute test: it also describes a new row written with every
+Settings toggle switched off.
+
+Schema changes are applied on every boot by the `MIGRATIONS` tuple in
+`backend/app.py` (`ADD COLUMN IF NOT EXISTS`), so a `docker compose up` is the
+whole migration story.
+
+### Attachments
+
+Two more tables hold the images. They live in Postgres rather than on a volume
+so `db_data` stays the single thing to back up, and so a row can never outlive
+its bytes or vice versa.
+
+`images` - content-addressed, one row per distinct file:
+
+| column           | type        | notes                                       |
+|------------------|-------------|---------------------------------------------|
+| sha256           | text PK     | storage key; equal bytes are stored once    |
+| media_type       | text        | one of `ALLOWED_IMAGE_TYPES`                |
+| bytes            | bytea       | the original upload                         |
+| byte_size        | integer     |                                             |
+| width / height   | integer     | client-reported, layout hints only          |
+| thumb            | bytea       | 512px WebP from the browser, or null        |
+| thumb_media_type | text        |                                             |
+| created_at       | timestamptz |                                             |
+
+`prompt_images` - the join, `(prompt_id, position)` as the primary key so
+attachments come back in the order they were sent. `prompt_id` is
+`ON DELETE CASCADE`, which is what makes "delete it from history and it's gone"
+true. `image_sha` is `ON DELETE RESTRICT`.
+
+**Thumbnails are made in the browser** (`makeThumbnail()` in `app.jsx`: canvas →
+WebP at 512px). That keeps the server from ever decoding untrusted image data,
+and means History pulls tens of kilobytes per attachment instead of megabytes.
+A thumbnail is optional: small images skip it and serve their original in its
+place, as do images uploaded before thumbnails existed.
+
+**Orphan sweep.** Deleting a prompt cascades its join rows but not the bytes -
+deduplication means the image may still belong to another prompt. So
+`delete_orphan_images()` runs right after the delete and drops only rows nothing
+references any more. There is no background garbage collector to forget about.
+
 ## HTTP API
 
 - `POST /api/login` `{pin}` → `{ok}` / `401` / `429 {retry_after}`
 - `GET  /api/session` → `{authenticated}`
 - `POST /api/logout` → `{ok}`
-- `GET  /api/config` → `{models:[{id,label,provider,provider_label,input,output,context_window,depth,est_pln}], default, usd_pln, max_tokens, image_limits:{max_images,max_image_mb,max_total_mb,allowed_types}}` *(auth)*
-- `POST /api/generate` `{model, prompt, depth, images?}` → answer + tokens + cost + duration *(auth)*.
-  `images` is an optional array of `{data (base64, no data: prefix), media_type}`, validated
-  server-side against `image_limits` before any provider is called.
-- `GET  /api/history?q=&before=` → page of rows (preview, 30 per page, newest first); `q`
+- `POST /api/history/:id/share` `{show_prompt?, show_images?}` → `{token, show_prompt, show_images}` - publishes or updates visibility, preserving an existing token *(auth)*
+- `PATCH /api/history/:id/share` `{show_prompt?, show_images?}` → same response, requires an existing share *(auth)*
+- `DELETE /api/history/:id/share` → `{ok}` - revokes the link *(auth)*
+- `GET  /api/share/:token` → `{created_at, model_label, prompt, answer, images}`,
+  or `404` - the public read route, no auth
+- `GET  /api/share/:token/images/:sha` / `/thumb` → the bytes, scoped to that
+  share's own attachments - no auth
+- `GET /s/:token` → app shell with Open Graph metadata, or HTTP 410 for an unavailable link
+- `GET  /api/config` → `{models:[{id,label,provider,provider_label,input,output,context_window,est_pln}], default, usd_pln, max_tokens, max_context_chars, image_limits:{max_images,max_image_mb,max_total_mb,allowed_types}}` *(auth)*
+- `POST /api/generate` `{model, prompt, context?, brief?, images?}` → answer + tokens + cost + duration *(auth)*.
+  `prompt` is the raw question; `context` is the Settings block (capped at
+  `max_context_chars`); `brief` asks for the "very brief: " prefix. The server joins them
+  with `compose_prompt()` and stores the three separately - see the data model above.
+  `images` is an optional array of `{data (base64, no data: prefix), media_type, width?,
+  height?, thumb?, thumb_media_type?}`, validated server-side against `image_limits`
+  before any provider is called, then stored (see Attachments above).
+- `GET  /api/history?q=&before=&shared=true` → page of rows (preview + attachment descriptors, 30 per page, newest first); `q`
   filters prompt+answer (ILIKE), `before` is an id cursor for infinite scroll *(auth)*
-- `GET  /api/history/:id` → full row *(auth)*
-- `DELETE /api/history/:id` → delete a row *(auth)*
+- `GET  /api/history/:id` → full row, plus `images:[{sha,media_type,byte_size,width,height,has_thumb}]` *(auth)*
+- `DELETE /api/history/:id` → delete a row, its join rows, and any image left unreferenced *(auth)*
+- `GET  /api/images/:sha` → the original bytes *(auth)*
+- `GET  /api/images/:sha/thumb` → the thumbnail, falling back to the original when there is none *(auth)*
 - `GET  /api/health` → `{ok}`
 
 ## Models & pricing
@@ -102,19 +176,38 @@ Three providers, selected per model via a `provider` field. Pricing is USD per 1
 tokens (input / output). `context_window` (tokens) is shown in the Ask view's
 session sidebar.
 
-| id                     | label               | provider | input | output | context_window |
-|------------------------|---------------------|----------|-------|--------|-----------------|
-| gemini-2.5-flash-lite  | Gemini 2.5 Flash Lite | google   | 0.10  | 0.40   | 1M              |
-| gemini-3.1-flash-lite  | Gemini 3.1 Flash Lite | google   | 0.25  | 1.50   | 1M              |
-| gemini-3.5-flash       | Gemini 3.5 Flash    | google   | 1.50  | 9.00   | 1M              |
-| claude-haiku-4-5       | Haiku 4.5           | anthropic| 1     | 5      | 200k            |
-| claude-sonnet-4-6      | Sonnet 4.6          | anthropic| 3     | 15     | 200k            |
-| claude-opus-4-8        | Opus 4.8            | anthropic| 5     | 25     | 200k            |
-| claude-fable-5         | Fable 5             | anthropic| 10    | 50     | 200k            |
-| gpt-6-astra            | GPT-6 Astra         | openai   | 10    | 50     | 400k            |
+**`MODELS` is a catalog; `MODEL_ORDER` is the menu.** They are deliberately separate.
+`prompts.model` stores whichever model actually served an answer, so a model that
+leaves the picker must keep its label and its rate forever - otherwise old history
+renders as a raw id and a fallback-served response gets mis-priced. Retiring a model
+means removing it from `MODEL_ORDER` only. `/api/generate` accepts ids from
+`MODEL_ORDER`, not from the whole catalog.
+
+Selectable (`MODEL_ORDER`, in dropdown order):
+
+| id                     | label                 | provider  | input | output | context_window |
+|------------------------|-----------------------|-----------|-------|--------|----------------|
+| gemini-3.1-flash-lite  | Gemini 3.1 Flash Lite | google    | 0.25  | 1.50   | 1M             |
+| gemini-3.8-flash       | Gemini 3.8 Flash      | google    | 1.50  | 7.50   | 1M             |
+| claude-haiku-4-5       | Haiku 4.5             | anthropic | 1     | 5      | 200k           |
+| claude-fable-5         | Fable 5               | anthropic | 10    | 50     | 1M             |
+| gpt-5.4-nano           | GPT-5.4 Nano          | openai    | 0.20  | 1.25   | 400k           |
+| gpt-6-astra            | GPT-6 Astra           | openai    | 10    | 50     | 400k           |
+
+Retired - catalog-only, for history labels and pricing:
+
+| id                     | label                 | provider  | input | output |
+|------------------------|-----------------------|-----------|-------|--------|
+| gemini-2.5-flash-lite  | Gemini 2.5 Flash Lite | google    | 0.10  | 0.40   |
+| gemini-3.5-flash       | Gemini 3.5 Flash      | google    | 1.50  | 9.00   |
+| claude-sonnet-4-6      | Sonnet 4.6            | anthropic | 3     | 15     |
+| claude-opus-4-8        | Opus 4.8              | anthropic | 5     | 25     |
 
 Notes:
 - Default model is **`gemini-3.1-flash-lite`**.
+- Gemini 3.8 Flash is listed at its **standard** rate (1.50 / 7.50), not the
+  introductory 0.75 / 3.75 running until 2026-12-31 - a deliberate choice so
+  estimates never understate what it will cost from January.
 - The UI groups the model dropdown by provider (Anthropic / Google Gemini / OpenAI)
   and shows a per-prompt price estimate next to each model.
 - **Price display is in PLN.** Cost is computed in USD from real token counts, then
@@ -124,51 +217,46 @@ Notes:
   + `ESTIMATE_OUTPUT_TOKENS` (1500) tokens; `/api/config` returns the pre-computed
   `est_pln` per model plus the `usd_pln` rate.
 - Fable 5 always thinks and can be slow; it is called through the beta endpoint
-  with a server-side fallback to Opus 4.8 on a policy refusal. The served model
-  (which may be the fallback) is what gets priced and stored.
+  with `fallbacks: "default"`, which routes by refusal category server-side - so
+  there is no fallback model list to keep in sync with `MODEL_ORDER`. The served
+  model (which may be the fallback) is what gets priced and stored, which is the
+  other reason retired ids stay in the catalog.
 - Anthropic refusals (`stop_reason == "refusal"`) and empty/blocked Gemini
   responses are surfaced as a short note.
 
-## Reasoning controls (per model)
+## Reasoning defaults
 
-`/api/config` returns per-model `effort` and `thinking` descriptors, each with an
-`available` flag. The UI always shows an Effort control (dropdown when available,
-read-only value otherwise) and a Thinking switch (interactive when available, locked
-to its fixed value otherwise). Defaults are always the lowest. `/api/generate` takes
-`effort` and `thinking`.
-
-- **Anthropic Sonnet 4.6 / Opus 4.8**: `Effort` (low/medium/high/max, default low →
-  `output_config.effort`) + `Thinking` (off/on, default off → `thinking:
-  {type:"adaptive"}` when on).
-- **Anthropic Fable 5**: `Effort` selectable; `Thinking` fixed "On" (always thinks).
-- **Anthropic Haiku 4.5**: no controls (shown as "Default").
-- **Gemini 3.x**: single `Effort` (low/medium/high → `thinking_config.thinking_level`,
-  built defensively; `max` → `high`).
-- **Gemini 2.5**: fixed "Effort: Off" (native thinking off).
-
-The applied combination is summarised into the `reasoning` column (e.g. `Low`,
-`Medium · thinking`) and shown in history.
+All new generations use server-owned `DEFAULT_DEPTH = "low"`. The frontend has no
+reasoning selector, sends no depth, and does not display reasoning labels in results
+or History. The API ignores a legacy client's requested depth, including `max`.
+Models without adjustable reasoning receive no effort parameter. Other models use
+their existing low mapping; Anthropic adaptive thinking remains enabled where required.
+Historical database values and catalog mappings are retained. `/api/config` no longer
+advertises adjustable depth.
 
 ## Prompt context (client-side settings)
 
 The Settings tab stores a small object in the browser (`localStorage`, key
-`briefai_settings`) and the frontend prepends context lines above the prompt before
-sending. Nothing about this is server-side; the composed text is what gets stored in
-history.
+`briefai_settings`). `buildContext()` turns it into a plain text block, which the
+frontend sends as the separate `context` field - it is never glued onto the prompt
+client-side.
 
 - `now: <date>, <HH:MM>` - single "Date & time" toggle (default on), from the browser clock.
 - `user is currently in <text>` - editable location (default "Bielsko-Biała").
 - `user data: <text>` - free-form personal context (default off).
 
-Composition: `<context>\n\n` + optional `very brief: ` (Brief button) + the prompt.
-Each part is independently toggleable; all off → just the raw prompt.
+Composition happens server-side in `compose_prompt()`: `<context>\n\n` + optional
+`very brief: ` (Brief button) + the prompt. Each part is independently toggleable;
+all off → just the raw prompt. The preferences themselves stay in the browser; only
+the rendered block travels, and it is capped at `MAX_CONTEXT_CHARS` (8000).
 
 ## Live cost estimate
 
 Shown next to the input as `est_in: X zł`, priced from the model's per-1M input
 rate × `USD_TO_PLN`. **Input only** - the output side isn't estimated, since it
 can't be predicted before the model answers (the exact total cost, input + output,
-is shown after the answer). Input tokens ≈ composed-text length / 4, plus, for any
+is shown after the answer). Input tokens ≈ `estimateChars()` / 4 - the prompt plus
+what the context block and Brief prefix will add once the server joins them - plus, for any
 attached images, `ceil(width/28) * ceil(height/28)` per image (Anthropic's public
 patch-token formula, used as a rough cross-provider guide - exact tokenization
 differs per provider). Thinking/effort overhead is not modelled either.
@@ -188,9 +276,94 @@ is just a more expensive prompt.
   array, decoded server-side, and passed to whichever provider's SDK as its own
   multi-part content shape (image blocks for Anthropic, `Part.from_bytes` for
   Gemini, `image_url` data URIs for OpenAI's Chat Completions API).
-- Not persisted: images live only for the duration of the request. The `prompts`
-  table has no image column, so History has no way to show them - this was a
-  deliberate scope cut, not an oversight.
+- Persisted, content-addressed, with a browser-made thumbnail alongside - see
+  **Attachments** under the data model. History shows them; deleting a prompt
+  takes its images with it unless another prompt still uses the same file.
+- Limits are per-request: the 24MB total covers the originals, and thumbnails
+  have their own `MAX_TOTAL_THUMB_BYTES` ceiling on top. Both sit under nginx's
+  `client_max_body_size`, which has to allow for base64's ~33% overhead.
+
+## Image preview gallery
+
+Every attachment thumbnail opens the same custom modal gallery: in the composer,
+History list and detail, and the public share page. Preview and Download use the
+original bytes; public previews keep the token-scoped image URL.
+
+- Zoom from Fit to 4x, with scrolling to inspect enlarged images.
+- Previous/Next buttons, left/right arrow keys, and horizontal touch swipes at Fit.
+- Download the original image (local filename before sending; content-hash filename
+  for stored images).
+- Close via Escape, Close, or a click outside the image. Focus returns to the
+  thumbnail; closing a preview leaves the History detail open.
+- The modal traps keyboard focus and locks background scrolling. Loading, missing
+  images, and download errors have explicit states.
+
+## Command Deck interface
+
+The original Ask page, header, colors, and typography are retained. Settings uses
+matching corner panels and toggles for date/time, location, and personal context.
+Preferences keep the existing browser storage format. Ask includes quick toggles for
+all three context sections and an Edit settings action. The Ask view stays mounted
+while navigating tabs, preserving the draft, attachments, answer, and in-flight
+request; this is in-memory state, not persistence across page reloads. Settings has
+a Back to prompt action. History and Shared use square corners. Ask has a single
+Brief action: the button and Ctrl/Cmd+Enter both send `brief: true`, and the input
+cost estimate includes the Brief prefix. The backend still accepts older clients
+and retains the existing per-entry brief flag.
+
+The private Shared tab lists active publications using `GET /api/history?shared=true`.
+The filter is applied in SQL before pagination and combines with text search and
+`before`. It supports public preview and the same sharing controls as History.
+Revoking a link removes it from Shared immediately, without deleting the answer.
+On mobile, swiping left reveals Delete, which still requires explicit confirmation.
+
+## Public share links
+
+Any prompt stored with `prompt_is_raw = true` in History can be turned into a public, no-login link
+(`/s/<token>`) from the result or History, and revoked from the same sharing panel.
+
+The panel loads private settings from `GET /api/history/:id`. Publishing uses
+`POST /api/history/:id/share`; editing an existing publication uses `PATCH` on the
+same route. Both accept optional boolean `show_prompt` and `show_images` values.
+`PATCH` never publishes an unshared answer. Updates lock the prompt row so concurrent
+publishing returns the same token. The UI requires an explicit Publish action;
+images default to excluded for a new publication.
+
+The `share_show_prompt` and `share_show_images` columns default to true in migrations
+to preserve existing links. Hidden questions return `prompt: null`, while hidden
+images return an empty list AND reject original/thumbnail requests, even for known
+hashes. Private History remains unchanged.
+
+nginx proxies `/s/:token` to Flask. Flask serves the same frontend shell with escaped
+Open Graph metadata respecting question visibility. Unavailable HTML pages return
+410 and still show the app's unavailable-link view; JSON/image endpoints return 404.
+Public pages and API responses use `no-store` and `X-Robots-Tag: noindex, nofollow`.
+The backend image now builds from the repository root and copies the frontend shell;
+`.dockerignore` limits the build context to backend sources and that shell. Compose
+handles this automatically. Rebuild both backend and frontend after shell changes.
+
+Legacy entries may contain personal context inside `prompt`, so sharing them
+returns 409. Public links and image routes also reject legacy entries with 404,
+even if they already have a share token. They remain available in private History.
+
+- `prompts.share_token` - `NULL` until shared, a `secrets.token_urlsafe(16)`
+  once it is. A unique partial index (`WHERE share_token IS NOT NULL`) keeps
+  tokens collision-free without constraining the common unshared case.
+- Sharing is idempotent: asking to share an already-shared prompt returns its
+  existing token rather than minting a new one, so a link someone already has
+  keeps working.
+- `GET /api/share/:token` needs no session. Its payload is deliberately
+  narrow - `prompt`, `answer`, `model_label`, `created_at`, `images` - and
+  never `context`, `cost_usd`, `input_tokens`, `output_tokens`, `duration_ms`
+  or `reasoning`, which stay internal diagnostics.
+- Attached images are served from `/api/share/:token/images/:sha`, scoped to
+  that prompt's own `prompt_images` rows - a token can't be used to pull an
+  arbitrary sha's bytes just because content hashes are otherwise guessable,
+  even though the underlying bytes are the same content-addressed rows the
+  authenticated `/api/images/:sha` route serves.
+- Unsharing just clears `share_token` back to `NULL`; deleting the prompt
+  (which already cascades its `prompt_images` and orphan-sweeps the bytes)
+  takes the link with it too, since the row it pointed at is gone.
 
 ## Adding more providers
 

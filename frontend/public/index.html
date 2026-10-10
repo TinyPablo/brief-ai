@@ -90,6 +90,75 @@
     .fade-in { animation: fade 0.25s ease-out; }
     @keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 
+    .image-preview-trigger { cursor: pointer; border-radius: 4px; }
+    .image-preview-trigger:focus-visible { outline: 2px solid #e6a84a; outline-offset: 3px; }
+    .image-preview {
+      position: fixed; inset: 0; margin: auto; padding: 0;
+      width: 100vw; height: 100dvh; max-width: none; max-height: none;
+      border: 0; color: #e8e2d6; background: rgba(13,12,10,.96);
+    }
+    .image-preview[open] { display: flex; flex-direction: column; }
+    .image-preview::backdrop { background: rgba(0,0,0,.85); }
+    .image-preview-toolbar, .image-preview-footer {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; padding: 16px 24px; flex-shrink: 0;
+      background: #1a1712; border-bottom: 1px solid #3a3226;
+    }
+    .image-preview-title { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+    .image-preview-name { font-size: 12px; color: #9c9286; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .image-preview-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+    .image-preview button { white-space: nowrap; min-height: 44px; min-width: 44px; padding: 8px 12px; border: 1px solid #3a3226; border-radius: 8px; font-size: 13px; }
+    .image-preview button:hover:not(:disabled) { background: #322b20; border-color: #e6a84a; }
+    .image-preview button:focus-visible { outline: 2px solid #e6a84a; outline-offset: 2px; }
+    .image-preview button:disabled { opacity: .35; cursor: default; }
+    .image-preview-viewport { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+    .image-preview-canvas { display: flex; align-items: center; justify-content: center; min-width: 100%; min-height: 100%; }
+    .image-preview-canvas img { max-width: none; flex-shrink: 0; user-select: none; border-radius: 3px; }
+    .image-preview-footer { border-top: 1px solid #3a3226; border-bottom: 0; }
+    .image-preview-footer span { font-size: 12px; color: #9c9286; text-align: center; }
+    @media (max-width: 640px) {
+      .image-preview-toolbar { flex-wrap: wrap; padding: 12px; }
+      .image-preview-title { width: 100%; }
+      .image-preview-actions { width: 100%; justify-content: space-between; }
+      .image-preview-footer { padding: 10px; gap: 8px; padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+      .image-preview-footer span { font-size: 10px; }
+      .image-preview button { padding: 8px; }
+    }
+
+    .deck-button { display: inline-flex; align-items: center; justify-content: center; min-height: 40px; padding: 8px 14px; border: 1px solid #3a3226; border-radius: 4px; font-size: 13px; cursor: pointer; }
+    .deck-button:hover:not(:disabled) { background: #383328; }
+    .deck-button.primary { background: #e6a84a; border-color: #e6a84a; color: #211b11; }
+    .deck-button.primary:hover:not(:disabled) { background: #ead2a8; }
+    .deck-button.danger { background: #913d36; color: white; }
+    .deck-button:disabled { opacity: .4; cursor: default; }
+    button:focus-visible, a:focus-visible { outline: 2px solid #e6a84a; outline-offset: 3px; }
+    .deck-input { background: #0d0c0a; border: 1px solid #3a3226; border-radius: 4px; padding: 10px 12px; font-size: 13px; }
+    .deck-modal { inset: 0; height: fit-content; margin: auto; padding: 20px; width: min(100%, 520px); max-height: 95dvh; border: none; background: transparent; color: #eee8dd; }
+    .deck-modal::backdrop { background: #000b; backdrop-filter: blur(5px); }
+    .deck-modal > section { padding: 28px; border: 1px solid #3a3226; border-radius: 6px; background: #1a1712; }
+    .sharing-option { display: flex; align-items: flex-start; gap: 12px; font-size: 15px; cursor: pointer; }
+    .sharing-option input { margin-top: 4px; width: 18px; height: 18px; accent-color: #e6a84a; }
+    .sharing-option small { display: block; color: #9c9286; font-size: 12px; line-height: 1.6; margin-top: 3px; }
+    .history-meta { flex-wrap: wrap; gap: 4px 12px; }
+    .history-meta > span { white-space: nowrap; }
+    @media (max-width: 640px) { .history-meta > .ml-auto { margin-left: 0; } }
+    .swipe-row { position: relative; overflow: hidden; }
+    .swipe-content { position: relative; transition: transform .2s ease; touch-action: pan-y; }
+    .swipe-delete { position: absolute; right: 0; top: 0; bottom: 0; width: 88px; color: white; background: #913d36; font-size: 13px; }
+    @media (prefers-reduced-motion: reduce) { .swipe-content, .fade-in { transition: none !important; animation: none !important; } }
+    @media (max-width: 640px) { .deck-modal { padding: 12px; } .deck-modal > section { padding: 20px; } }
+
+    .deck-heading { font-family: 'Space Mono', monospace; font-size: 14px; text-transform: uppercase; letter-spacing: .08em; }
+    .settings-section { padding: 20px; border: 1px solid #3a3226; background: #1a1712; }
+    .settings-section h2 { font-family: 'Space Mono', monospace; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: #f0bd6e; margin-bottom: 16px; }
+    .settings-section p { font-size: 12px; line-height: 1.6; color: #9c9286; }
+    .settings-toggle { appearance: none; width: 36px; height: 20px; border: 1px solid #3a3226; border-radius: 10px; background: #0d0c0a; position: relative; flex-shrink: 0; cursor: pointer; }
+    .settings-toggle::after { content: ''; position: absolute; top: 3px; left: 3px; width: 12px; height: 12px; border-radius: 50%; background: #9c9286; transition: transform .15s; }
+    .settings-toggle:checked { background: #e6a84a; border-color: #e6a84a; }
+    .settings-toggle:checked::after { background: #241a08; transform: translateX(16px); }
+    .settings-toggle:focus-visible { outline: 2px solid #e6a84a; outline-offset: 3px; }
+    .settings-section label { font-size: 13px; }
+
     /* Rendered markdown */
     .md { line-height: 1.7; color: #e6e6ec; font-size: 0.95rem; word-wrap: break-word; }
     .md > *:first-child { margin-top: 0; }
@@ -137,6 +206,6 @@
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked-katex-extension@5.1.4/lib/index.umd.js"></script>
 
-  <script type="text/babel" src="app.jsx"></script>
+  <script type="text/babel" src="/app.jsx"></script>
 </body>
 </html>

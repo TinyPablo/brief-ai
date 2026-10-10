@@ -73,10 +73,13 @@ function buildContext(settings) {
   return lines.join('\n');
 }
 
-function composePrompt(prompt, settings, brief) {
+// The composed text is the server's job now: /api/generate takes `prompt`,
+// `context` and `brief` separately and joins them on the way to the model, so
+// the stored prompt stays exactly what was typed. This local copy exists only
+// to size the live cost estimate.
+function estimateChars(prompt, settings, brief) {
   const ctx = buildContext(settings);
-  const prefix = brief ? 'very brief: ' : '';
-  return (ctx ? ctx + '\n\n' : '') + prefix + prompt;
+  return (ctx ? ctx.length + 2 : 0) + (brief ? 12 : 0) + prompt.length;
 }
 
 if (window.markedKatex) {
@@ -119,7 +122,6 @@ function Meta({ result, rate, onCopy, copied }) {
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[11px] text-muted border-b border-edge pb-3 mb-4">
       <span className="text-accent font-bold">{result.model_label}</span>
-      {result.reasoning && <span>{result.reasoning.toLowerCase()}</span>}
       <span>{fmtDuration(result.duration_ms)}</span>
       <span>{result.input_tokens.toLocaleString()}/{result.output_tokens.toLocaleString()} tok</span>
       <span className="glow text-accent">{zl(result.cost_usd * rate)}</span>
@@ -243,6 +245,204 @@ function Login({ onSuccess }) {
   );
 }
 
+function Modal({ title, onClose, children }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const focus = document.activeElement;
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    ref.current.showModal();
+    return () => {
+      document.body.style.overflow = overflow;
+      if (focus instanceof HTMLElement && focus.isConnected) focus.focus();
+    };
+  }, []);
+  return (
+    <dialog ref={ref} className="deck-modal" aria-label={title} onCancel={(e) => { e.preventDefault(); onClose(); }} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <section>
+        <header className="flex items-center justify-between gap-4 mb-6">
+          <h2 className="deck-heading text-2xl">{title}</h2>
+          <button type="button" aria-label="Close dialog" className="deck-button" onClick={onClose}>×</button>
+        </header>
+        {children}
+      </section>
+    </dialog>
+  );
+}
+
+function ShareDialog({ itemId, onClose, onChanged, onUnauth }) {
+  const [loaded, setLoaded] = useState(false);
+  const [allowed, setAllowed] = useState(false);
+  const [token, setToken] = useState(null);
+  const [showPrompt, setShowPrompt] = useState(true);
+  const [showImages, setShowImages] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    let active = true;
+    api('/history/' + itemId).then(async (res) => {
+      if (res.status === 401) { onUnauth(); onClose(); return; }
+      if (!res.ok) throw new Error('Could not load sharing settings.');
+      const item = await res.json();
+      if (!active) return;
+      setToken(item.share_token);
+      setAllowed(item.prompt_is_raw === true);
+      setShowPrompt(item.share_show_prompt !== false);
+      setShowImages(item.share_token ? item.share_show_images !== false : false);
+      if (!item.prompt_is_raw) setError('This older entry may contain personal context and cannot be shared.');
+      setLoaded(true);
+    }).catch((e) => { if (active) setError(e.message); });
+    return () => { active = false; };
+  }, [itemId]);
+  const save = async (revoke = false) => {
+    setBusy(true); setError(''); setCopied(false);
+    try {
+      const res = await api('/history/' + itemId + '/share', {
+        method: revoke ? 'DELETE' : token ? 'PATCH' : 'POST',
+        ...(!revoke ? { body: JSON.stringify({ show_prompt: showPrompt, show_images: showImages }) } : {}),
+      });
+      if (res.status === 401) { onUnauth(); onClose(); return; }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Could not update sharing.');
+      const next = revoke ? null : data.token;
+      setToken(next); setDirty(false);
+      if (onChanged) onChanged(itemId, next);
+    } catch (e) { setError(e.message || 'Could not update sharing.'); }
+    finally { setBusy(false); }
+  };
+  const url = token ? location.origin + '/s/' + token : '';
+  return (
+    <Modal title="Share answer" onClose={onClose}>
+      <p className="text-muted text-sm mb-5">Review the answer before publishing. Anyone with the link can read it.</p>
+      <fieldset disabled={!loaded || busy || !allowed} className="space-y-4">
+        <label className="sharing-option"><input type="checkbox" checked={showPrompt} onChange={(e) => { setShowPrompt(e.target.checked); setDirty(true); }} /><span>Include question<small>Show the text you asked alongside the answer.</small></span></label>
+        <label className="sharing-option"><input type="checkbox" checked={showImages} onChange={(e) => { setShowImages(e.target.checked); setDirty(true); }} /><span>Include images<small>Allow visitors to view and download attachments.</small></span></label>
+      </fieldset>
+      {token && <div className="mt-6 space-y-2">
+        <label className="text-xs text-muted" htmlFor="public-link">Public link</label>
+        <input id="public-link" className="deck-input w-full" value={url} readOnly onFocus={(e) => e.target.select()} />
+        <button type="button" className="deck-button" onClick={async () => {
+          try { await navigator.clipboard.writeText(url); setCopied(true); }
+          catch { setError('Select and copy the link above. Clipboard access is unavailable.'); }
+        }}>{copied ? 'Copied' : 'Copy link'}</button>
+        <a className="text-accent text-sm ml-4" href={url} target="_blank" rel="noopener noreferrer">Preview ↗</a>
+      </div>}
+      {error && <p role="alert" className="text-red-400 text-sm mt-4">{error}</p>}
+      {dirty && token && <p role="status" className="text-muted text-xs mt-4">Save changes to update the public page.</p>}
+      <div className="flex flex-wrap gap-3 mt-6">
+        <button type="button" className="deck-button primary" disabled={!loaded || busy || !allowed || (token && !dirty)} onClick={() => save()}>{busy ? 'Saving…' : token ? 'Save changes' : 'Publish link'}</button>
+        {token && <button type="button" className="deck-button text-red-400" disabled={busy} onClick={() => save(true)}>Stop sharing</button>}
+      </div>
+    </Modal>
+  );
+}
+
+function SwipeRow({ children, onDelete }) {
+  const [revealed, setRevealed] = useState(false);
+  const start = useRef(null);
+  const swiped = useRef(false);
+  return (
+    <div className="swipe-row">
+      {revealed && <button type="button" className="swipe-delete" onClick={onDelete}>Delete</button>}
+      <div className="swipe-content" style={{ transform: revealed ? 'translateX(-88px)' : undefined }}
+        onTouchStart={(e) => { swiped.current = false; start.current = e.touches.length === 1 ? { x: e.touches[0].clientX, y: e.touches[0].clientY } : null; }}
+        onTouchEnd={(e) => {
+          if (!start.current) return;
+          const dx = e.changedTouches[0].clientX - start.current.x;
+          const dy = e.changedTouches[0].clientY - start.current.y;
+          start.current = null;
+          if (Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.5) { setRevealed(dx < 0); swiped.current = true; }
+        }}
+        onTouchCancel={() => { start.current = null; }}
+        onClickCapture={(e) => {
+          if (swiped.current || revealed) { e.preventDefault(); e.stopPropagation(); if (!swiped.current) setRevealed(false); swiped.current = false; }
+        }}
+      >{children}</div>
+    </div>
+  );
+}
+
+function SharedView({ token }) {
+  const [state, setState] = useState('loading'); // loading | ok | not_found
+  const [data, setData] = useState(null);
+  const [authenticated, setAuthenticated] = useState(false);
+
+  useEffect(() => {
+    api('/share/' + token)
+      .then((res) => {
+        if (!res.ok) { setState('not_found'); return; }
+        return res.json().then((d) => { setData(d); setState('ok'); });
+      })
+      .catch(() => setState('not_found'));
+  }, [token]);
+
+  useEffect(() => {
+    if (state !== 'not_found') return;
+    let active = true;
+    api('/session')
+      .then((res) => res.ok ? res.json() : null)
+      .then((session) => {
+        if (active) setAuthenticated(session?.authenticated === true);
+      })
+      .catch(() => { if (active) setAuthenticated(false); });
+    return () => { active = false; };
+  }, [state, token]);
+
+  if (state === 'loading') {
+    return <div className="min-h-screen grid place-items-center"><div className="spinner" /></div>;
+  }
+
+  if (state === 'not_found') {
+    return (
+      <div className="min-h-screen grid place-items-center px-6 text-center">
+        <div>
+          <div className="font-mono text-lg mb-2">brief_ai<span className="text-accent glow">$</span></div>
+          <p className="text-muted text-sm">This link is no longer available.</p>
+          {authenticated && (
+            <a
+              href="/"
+              className="inline-flex mt-5 px-4 py-2 border border-edge rounded-lg text-sm text-accent hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent transition-colors"
+            >
+              Back to app
+            </a>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen px-4 py-10 flex justify-center">
+      <div className="w-full max-w-2xl fade-in">
+        <div className="font-mono text-sm mb-6 text-muted">
+          brief_ai<span className="text-accent glow">$</span>
+        </div>
+
+        <div className="corner-panel bg-panel border border-edge rounded-2xl p-5">
+          <div className="flex items-center gap-3 text-xs uppercase tracking-wide text-muted mb-1.5">
+            <span>{data.prompt === null ? 'Shared answer' : 'Question'}</span>
+            <span className="ml-auto normal-case text-[11px]">{fmtTime(data.created_at)}</span>
+          </div>
+          {data.prompt !== null && <div className="bg-panel2 border border-edge rounded-xl px-4 py-3 text-sm whitespace-pre-wrap">{data.prompt}</div>}
+          {data.images && data.images.length > 0 && (
+            <div className="mt-3">
+              <AttachmentStrip images={data.images} size={76} base={'/api/share/' + token + '/images/'} />
+            </div>
+          )}
+
+          <div className="flex items-center gap-3 text-xs uppercase tracking-wide text-muted mt-5 mb-2">
+            <span>response</span>
+            <span className="ml-auto normal-case text-accent2 text-[11px]">{data.model_label}</span>
+          </div>
+          <Markdown text={data.answer} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function groupByProvider(models) {
   const groups = [];
   models.forEach((m) => {
@@ -253,33 +453,37 @@ function groupByProvider(models) {
   return groups;
 }
 
-function Switch({ checked, disabled, onChange }) {
-  const seg = (active, label, value) => (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={() => { if (!disabled) onChange(value); }}
-      className={
-        'font-mono text-[11px] px-2.5 py-1 transition-colors '
-        + (active ? 'bg-accent text-accentInk font-bold' : 'text-muted hover:text-white')
-        + (disabled ? ' opacity-50 cursor-not-allowed' : ' cursor-pointer')
-      }
-    >
-      {label}
-    </button>
-  );
-  return (
-    <div role="switch" aria-checked={checked} className="inline-flex items-center border border-edge rounded overflow-hidden shrink-0">
-      {seg(!checked, 'low', false)}
-      {seg(checked, 'max', true)}
-    </div>
-  );
-}
-
 const IMAGE_TOKEN_TILE_PX = 28;
 
 function imageTokenEstimate(width, height) {
   return Math.ceil(width / IMAGE_TOKEN_TILE_PX) * Math.ceil(height / IMAGE_TOKEN_TILE_PX);
+}
+
+const THUMB_MAX_SIDE = 512;
+const THUMB_QUALITY = 0.8;
+
+// Thumbnails are made here rather than on the server: the backend never has to
+// decode untrusted image data, and History pulls ~50KB per attachment instead
+// of the full upload. Returns null when there is nothing to gain, in which case
+// the original is served in the thumbnail's place.
+function makeThumbnail(img) {
+  const longest = Math.max(img.naturalWidth, img.naturalHeight);
+  if (!longest || longest <= THUMB_MAX_SIDE) return null;
+  const scale = THUMB_MAX_SIDE / longest;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+  try {
+    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+    // toDataURL silently falls back to PNG where WebP isn't supported, so read
+    // the type back out of the result instead of assuming it.
+    const url = canvas.toDataURL('image/webp', THUMB_QUALITY);
+    const match = /^data:([^;,]+);base64,/.exec(url);
+    if (!match) return null;
+    return { base64: url.slice(url.indexOf(',') + 1), mediaType: match[1] };
+  } catch (e) {
+    return null;
+  }
 }
 
 function readImageFile(file) {
@@ -289,34 +493,225 @@ function readImageFile(file) {
     reader.onload = () => {
       const dataUrl = reader.result;
       const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
-      const finish = (width, height) => resolve({
+      const finish = (width, height, thumb) => resolve({
         id: Math.random().toString(36).slice(2),
         base64,
+        name: file.name,
         mediaType: file.type,
         sizeBytes: file.size,
         previewUrl: dataUrl,
         width,
         height,
+        thumb,
       });
       const img = new Image();
-      img.onload = () => finish(img.naturalWidth || 1000, img.naturalHeight || 1000);
-      img.onerror = () => finish(1000, 1000); // rough fallback if decoding fails
+      img.onload = () => finish(img.naturalWidth || 1000, img.naturalHeight || 1000, makeThumbnail(img));
+      img.onerror = () => finish(1000, 1000, null); // rough fallback if decoding fails
       img.src = dataUrl;
     };
     reader.readAsDataURL(file);
   });
 }
 
-function ImageThumb({ image, onRemove }) {
+function imageUrl(sha, thumb, base) {
+  return (base || '/api/images/') + sha + (thumb ? '/thumb' : '');
+}
+
+const ImagePreviewContext = React.createContext(null);
+
+function previewImage(image, base) {
+  const extension = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp' }[image.mediaType || image.media_type] || 'jpg';
+  return {
+    src: image.previewUrl || imageUrl(image.sha, false, base),
+    name: image.name || `image-${image.sha || image.id}.${extension}`,
+  };
+}
+
+function ImagePreviewProvider({ children }) {
+  const [gallery, setGallery] = useState(null);
+  const open = (images, index = 0, base) => {
+    if (images.length) setGallery({ images: images.map((im) => previewImage(im, base)), index });
+  };
+  return (
+    <ImagePreviewContext.Provider value={open}>
+      {children}
+      {gallery && <ImagePreview images={gallery.images} initialIndex={gallery.index} onClose={() => setGallery(null)} />}
+    </ImagePreviewContext.Provider>
+  );
+}
+
+function ImagePreview({ images, initialIndex, onClose }) {
+  const [index, setIndex] = useState(initialIndex);
+  const [zoom, setZoom] = useState(1);
+  const [status, setStatus] = useState('loading');
+  const [naturalSize, setNaturalSize] = useState({ width: 1, height: 1 });
+  const [viewportSize, setViewportSize] = useState({ width: 1, height: 1 });
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState('');
+  const dialogRef = useRef(null);
+  const viewportRef = useRef(null);
+  const swipeRef = useRef(null);
+  const mountedRef = useRef(true);
+  const current = images[index];
+  const fitScale = Math.min(Math.max(1, viewportSize.width - 32) / naturalSize.width, Math.max(1, viewportSize.height - 32) / naturalSize.height, 1);
+  const displayWidth = naturalSize.width * fitScale * zoom;
+  const displayHeight = naturalSize.height * fitScale * zoom;
+  const move = (delta) => {
+    setIndex((i) => (i + delta + images.length) % images.length);
+    setZoom(1);
+    setStatus('loading');
+    setDownloadError('');
+    if (viewportRef.current) viewportRef.current.scrollTo(0, 0);
+  };
+
+  useEffect(() => {
+    mountedRef.current = true;
+    const dialog = dialogRef.current;
+    const previousFocus = document.activeElement;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    dialog.showModal();
+    const observer = new ResizeObserver(([entry]) => {
+      setViewportSize({ width: entry.contentRect.width, height: entry.contentRect.height });
+    });
+    observer.observe(viewportRef.current);
+    const onKeyDown = (event) => {
+      if (images.length > 1 && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+        event.preventDefault();
+        move(event.key === 'ArrowLeft' ? -1 : 1);
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      mountedRef.current = false;
+      observer.disconnect();
+      dialog.close();
+      document.body.style.overflow = previousOverflow;
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
+    };
+  }, []);
+
+  const download = async () => {
+    setDownloading(true);
+    setDownloadError('');
+    try {
+      const response = await fetch(current.src, { credentials: 'same-origin' });
+      if (!response.ok) throw new Error('download_failed');
+      const blob = await response.blob();
+      if (!blob.type.startsWith('image/')) throw new Error('not_an_image');
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = current.name;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch {
+      if (mountedRef.current) setDownloadError('Could not download this image. Please try again.');
+    } finally {
+      if (mountedRef.current) setDownloading(false);
+    }
+  };
+
+  return (
+    <dialog
+      ref={dialogRef}
+      className="image-preview"
+      aria-label="Image preview"
+      onCancel={(e) => { e.preventDefault(); onClose(); }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <header className="image-preview-toolbar">
+        <div className="image-preview-title">
+          <span className="font-mono text-accent text-xs">IMAGE {index + 1} / {images.length}</span>
+          <span className="image-preview-name" title={current.name}>{current.name}</span>
+        </div>
+        <div className="image-preview-actions">
+          <button type="button" aria-label="Zoom out" disabled={zoom === 1 || status !== 'ready'} onClick={() => setZoom((z) => Math.max(1, z - 0.5))}>−</button>
+          <button type="button" aria-label="Fit image to screen" onClick={() => { setZoom(1); viewportRef.current.scrollTo(0, 0); }}>{zoom === 1 ? 'Fit' : `${Math.round(zoom * 100)}%`}</button>
+          <button type="button" aria-label="Zoom in" disabled={zoom === 4 || status !== 'ready'} onClick={() => setZoom((z) => Math.min(4, z + 0.5))}>+</button>
+          <button type="button" onClick={download} disabled={downloading || status !== 'ready'}>{downloading ? 'Saving…' : 'Download'}</button>
+          <button type="button" aria-label="Close image preview" autoFocus onClick={onClose}>✕</button>
+        </div>
+      </header>
+      <div
+        ref={viewportRef}
+        className="image-preview-viewport"
+        onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+        onTouchStart={(e) => {
+          swipeRef.current = zoom === 1 && e.touches.length === 1
+            ? { x: e.touches[0].clientX, y: e.touches[0].clientY } : null;
+        }}
+        onTouchEnd={(e) => {
+          const start = swipeRef.current;
+          swipeRef.current = null;
+          if (!start || images.length < 2) return;
+          const dx = e.changedTouches[0].clientX - start.x;
+          const dy = e.changedTouches[0].clientY - start.y;
+          if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) move(dx < 0 ? 1 : -1);
+        }}
+        onTouchCancel={() => { swipeRef.current = null; }}
+      >
+        <div className="image-preview-canvas" style={{ width: Math.max(viewportSize.width, displayWidth), height: Math.max(viewportSize.height, displayHeight) }} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+          {status === 'loading' && <span className="spinner" role="status" aria-label="Loading image" />}
+          {status === 'error' && <p role="alert">This image is no longer available.</p>}
+          <img
+            key={index}
+            src={current.src}
+            alt={current.name}
+            draggable="false"
+            style={{ display: status === 'ready' ? 'block' : 'none', width: displayWidth, height: displayHeight }}
+            onLoad={(e) => { setNaturalSize({ width: e.currentTarget.naturalWidth, height: e.currentTarget.naturalHeight }); setStatus('ready'); }}
+            onError={() => setStatus('error')}
+          />
+        </div>
+      </div>
+      <footer className="image-preview-footer">
+        <button type="button" aria-label="Previous image" disabled={images.length < 2} onClick={() => move(-1)}>← Previous</button>
+        <span role="status">{downloadError || 'Esc to close · Scroll to explore when zoomed'}</span>
+        <button type="button" aria-label="Next image" disabled={images.length < 2} onClick={() => move(1)}>Next →</button>
+      </footer>
+    </dialog>
+  );
+}
+
+function AttachmentStrip({ images, size, base }) {
+  const openPreview = React.useContext(ImagePreviewContext);
+  if (!images || !images.length) return null;
+  const px = size || 56;
+  return (
+    <div className="flex flex-wrap gap-2">
+      {images.map((im, index) => (
+        <button type="button" key={im.sha + '-' + index} className="image-preview-trigger" aria-label={`Preview image ${index + 1}`} onClick={(e) => { e.stopPropagation(); openPreview(images, index, base); }}>
+          <img
+            src={imageUrl(im.sha, im.has_thumb, base)}
+            alt=""
+            loading="lazy"
+            style={{ width: px, height: px }}
+            className="border border-edge bg-panel2 object-cover shrink-0"
+          />
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ImageThumb({ image, images, index, onRemove }) {
+  const openPreview = React.useContext(ImagePreviewContext);
   return (
     <div className="flex flex-col items-center gap-1">
-      <div className="relative w-[52px] h-[52px] border border-edge bg-panel2 overflow-hidden">
-        <img src={image.previewUrl} alt="" className="w-full h-full object-cover" />
+      <div className="relative w-[52px] h-[52px] border border-edge bg-panel2">
+        <button type="button" className="image-preview-trigger w-full h-full" aria-label={`Preview image ${index + 1}`} onClick={() => openPreview(images, index)}>
+          <img src={image.previewUrl} alt="" className="w-full h-full object-cover" />
+        </button>
         <button
           type="button"
           onClick={() => onRemove(image.id)}
           title="Remove"
-          className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-ink border-l border-b border-edge flex items-center justify-center text-muted hover:text-white"
+          aria-label={`Remove image ${index + 1}`}
+          className="absolute -top-1 -right-1 w-4 h-4 bg-ink border border-edge flex items-center justify-center text-muted hover:text-white"
         >
           <svg width="8" height="8" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.6"><path d="M6 6l12 12M18 6L6 18" /></svg>
         </button>
@@ -333,11 +728,10 @@ const DEFAULT_IMAGE_LIMITS = {
   allowed_types: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
 };
 
-function AskView({ models, model, setModel, depth, setDepth, rate, imageLimits, settings, onUnauth }) {
+function AskView({ models, model, setModel, rate, imageLimits, settings, onUnauth }) {
   const limits = imageLimits || DEFAULT_IMAGE_LIMITS;
   const groups = useMemo(() => groupByProvider(models), [models]);
   const currentModel = models.find((m) => m.id === model) || null;
-  const depthCtl = currentModel ? currentModel.depth : null;
   const [prompt, setPrompt] = useState('');
   const [images, setImages] = useState([]);
   const [imageError, setImageError] = useState('');
@@ -346,7 +740,7 @@ function AskView({ models, model, setModel, depth, setDepth, rate, imageLimits, 
   const [error, setError] = useState('');
   const [elapsed, setElapsed] = useState(0);
   const [copied, setCopied] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [sharing, setSharing] = useState(false);
   const fileInputRef = useRef(null);
 
   useEffect(() => {
@@ -413,15 +807,15 @@ function AskView({ models, model, setModel, depth, setDepth, rate, imageLimits, 
 
   const estimate = useMemo(() => {
     if (!currentModel) return null;
-    const composed = composePrompt(prompt, settings, false);
-    if (!composed.trim() && images.length === 0) return null;
-    const inTok = Math.ceil(composed.length / 4) + imagesTokenTotal;
+    const chars = estimateChars(prompt, settings, true);
+    if (!prompt.trim() && images.length === 0) return null;
+    const inTok = Math.ceil(chars / 4) + imagesTokenTotal;
     return (inTok / 1e6 * currentModel.input) * rate;
   }, [prompt, currentModel, settings, imagesTokenTotal, rate, images.length]);
 
-  const doSend = async (brief) => {
+  const send = async () => {
     if (!prompt.trim() || loading || overLimit) return;
-    const text = composePrompt(prompt, settings, brief);
+    const context = buildContext(settings);
     setLoading(true);
     setResult(null);
     setError('');
@@ -431,9 +825,18 @@ function AskView({ models, model, setModel, depth, setDepth, rate, imageLimits, 
         method: 'POST',
         body: JSON.stringify({
           model,
-          prompt: text,
-          depth,
-          ...(images.length ? { images: images.map((im) => ({ data: im.base64, media_type: im.mediaType })) } : {}),
+          prompt: prompt.trim(),
+          ...(context ? { context } : {}),
+          brief: true,
+          ...(images.length ? {
+            images: images.map((im) => ({
+              data: im.base64,
+              media_type: im.mediaType,
+              width: im.width,
+              height: im.height,
+              ...(im.thumb ? { thumb: im.thumb.base64, thumb_media_type: im.thumb.mediaType } : {}),
+            })),
+          } : {}),
         }),
       });
       if (res.status === 401) { onUnauth(); return; }
@@ -449,8 +852,6 @@ function AskView({ models, model, setModel, depth, setDepth, rate, imageLimits, 
       setLoading(false);
     }
   };
-
-  const send = () => doSend(false);
 
   const clearAll = () => {
     setPrompt('');
@@ -501,8 +902,8 @@ function AskView({ models, model, setModel, depth, setDepth, rate, imageLimits, 
 
         {images.length > 0 && (
           <div className="flex flex-wrap gap-2.5 px-4 pt-3 pb-1">
-            {images.map((im) => (
-              <ImageThumb key={im.id} image={im} onRemove={removeImage} />
+            {images.map((im, index) => (
+              <ImageThumb key={im.id} image={im} images={images} index={index} onRemove={removeImage} />
             ))}
           </div>
         )}
@@ -522,7 +923,6 @@ function AskView({ models, model, setModel, depth, setDepth, rate, imageLimits, 
             ))}
           </select>
 
-          {depthCtl && depthCtl.available && <Switch checked={depth === 'max'} onChange={(v) => setDepth(v ? 'max' : 'low')} />}
 
           <button
             type="button"
@@ -567,46 +967,15 @@ function AskView({ models, model, setModel, depth, setDepth, rate, imageLimits, 
               </svg>
             </button>
 
-            <div className="relative inline-flex">
-              <button
-                onClick={() => doSend(true)}
-                disabled={sendDisabled}
-                className="flex items-center gap-2 bg-accent hover:bg-accent2 disabled:opacity-40 disabled:hover:bg-accent text-accentInk text-[11px] font-bold pl-4 pr-3 py-1.5 transition-colors"
-              >
-                {loading ? <span className="spinner" /> : null}
-                {loading ? 'THINKING' : 'BRIEF'}
-              </button>
-              <button
-                onClick={() => setMenuOpen((o) => !o)}
-                disabled={sendDisabled}
-                title="More send options"
-                className="bg-accent hover:bg-accent2 disabled:opacity-40 disabled:hover:bg-accent text-accentInk px-2 py-1.5 border-l border-accentInk/30 transition-colors"
-              >
-                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="6 9 12 15 18 9" />
-                </svg>
-              </button>
-
-              {menuOpen && (
-                <>
-                  <div className="fixed inset-0 z-20" onClick={() => setMenuOpen(false)} />
-                  <div className="absolute bottom-full right-0 mb-1 w-36 bg-panel2 border border-edge overflow-hidden shadow-lg z-30 font-mono text-[11px]">
-                    <button
-                      onClick={() => { setMenuOpen(false); doSend(true); }}
-                      className="w-full text-left px-3 py-2 hover:bg-white/5 transition-colors"
-                    >
-                      brief
-                    </button>
-                    <button
-                      onClick={() => { setMenuOpen(false); doSend(false); }}
-                      className="w-full text-left px-3 py-2 hover:bg-white/5 transition-colors"
-                    >
-                      send
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
+            <button
+              type="button"
+              onClick={send}
+              disabled={sendDisabled}
+              className="flex items-center gap-2 bg-accent hover:bg-accent2 disabled:opacity-40 disabled:hover:bg-accent text-accentInk text-[11px] font-bold px-4 py-1.5 transition-colors"
+            >
+              {loading ? <span className="spinner" /> : null}
+              {loading ? 'thinking…' : 'brief'}
+            </button>
           </div>
         </div>
       </div>
@@ -630,11 +999,12 @@ function AskView({ models, model, setModel, depth, setDepth, rate, imageLimits, 
         </div>
       )}
 
+      {sharing && result && <ShareDialog itemId={result.id} onClose={() => setSharing(false)} onUnauth={onUnauth} />}
       {result && (
         <div className="corner-panel border border-edge bg-panel fade-in">
           <div className="flex items-center justify-between px-4 py-2 border-b border-edge">
             <span className="font-mono text-[10px] tracking-widest text-muted/80 uppercase">response</span>
-            <span className="font-mono text-[10px] text-good">● 200 ok</span>
+            <button type="button" className="deck-button" onClick={() => setSharing(true)}>Share answer</button>
           </div>
           <div className="p-5">
             <Meta result={result} rate={rate} onCopy={copy} copied={copied} />
@@ -699,7 +1069,7 @@ function groupHistory(items) {
   return weeks;
 }
 
-function HistoryView({ rate, onUnauth }) {
+function HistoryView({ rate, onUnauth, sharedOnly = false }) {
   const [items, setItems] = useState([]);
   const [q, setQ] = useState('');
   const [loading, setLoading] = useState(false);
@@ -707,6 +1077,10 @@ function HistoryView({ rate, onUnauth }) {
   const [loaded, setLoaded] = useState(false);
   const [openState, setOpenState] = useState({});
   const [detail, setDetail] = useState(null);
+  const [shareItem, setShareItem] = useState(null);
+  const [deleteItem, setDeleteItem] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
 
   const itemsRef = useRef([]);
   const loadingRef = useRef(false);
@@ -721,6 +1095,7 @@ function HistoryView({ rate, onUnauth }) {
     loadingRef.current = true;
     setLoading(true);
     const params = new URLSearchParams();
+    if (sharedOnly) params.set('shared', 'true');
     if (q.trim()) params.set('q', q.trim());
     if (!reset && itemsRef.current.length) {
       params.set('before', itemsRef.current[itemsRef.current.length - 1].id);
@@ -739,7 +1114,7 @@ function HistoryView({ rate, onUnauth }) {
       setLoading(false);
       setLoaded(true);
     }
-  }, [q, onUnauth]);
+  }, [q, onUnauth, sharedOnly]);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -764,9 +1139,16 @@ function HistoryView({ rate, onUnauth }) {
     return () => ob.disconnect();
   }, [hasMore, fetchPage]);
 
+  const toggleShare = (it, e) => { e.stopPropagation(); setShareItem(it.id); };
+  const shareChanged = (id, token) => {
+    setItems((prev) => sharedOnly && !token ? prev.filter((it) => it.id !== id) : prev.map((it) => it.id === id ? { ...it, share_token: token } : it));
+    setDetail((prev) => prev && prev.id === id ? { ...prev, share_token: token } : prev);
+    if (sharedOnly && token && !itemsRef.current.some((it) => it.id === id)) fetchPage(true);
+  };
+
   const isOpen = (key, type) => {
     if (openState[key] !== undefined) return openState[key];
-    return type === 'week' ? key === curWeek : key === curDay;
+    return sharedOnly || (type === 'week' ? key === curWeek : key === curDay);
   };
   const toggle = (key, type) => setOpenState((s) => ({ ...s, [key]: !isOpen(key, type) }));
 
@@ -778,23 +1160,28 @@ function HistoryView({ rate, onUnauth }) {
     } catch (e) { /* noop */ }
   };
 
-  const del = async (id, e) => {
-    e.stopPropagation();
-    if (!window.confirm('Delete this conversation?')) return;
+  const del = (id, e) => { if (e) e.stopPropagation(); setDeleteError(''); setDeleteItem(id); };
+  const confirmDelete = async () => {
+    setDeleting(true); setDeleteError('');
     try {
-      const res = await api('/history/' + id, { method: 'DELETE' });
+      const res = await api('/history/' + deleteItem, { method: 'DELETE' });
       if (res.status === 401) { onUnauth(); return; }
-      if (res.ok) {
-        setItems((prev) => prev.filter((x) => x.id !== id));
-        if (detail && detail.id === id) setDetail(null);
-      }
-    } catch (e2) { /* noop */ }
+      if (!res.ok) throw new Error('Could not delete this answer. Please try again.');
+      setItems((prev) => prev.filter((x) => x.id !== deleteItem));
+      if (detail && detail.id === deleteItem) setDetail(null);
+      setDeleteItem(null);
+    } catch (e) { setDeleteError(e.message); }
+    finally { setDeleting(false); }
   };
 
   const groups = useMemo(() => groupHistory(items), [items]);
 
   return (
     <div className="space-y-3">
+      {sharedOnly && <div className="corner-panel bg-panel border border-edge px-4 py-3 mb-5">
+        <h1 className="font-mono text-xs uppercase tracking-widest text-accent2">Shared answers</h1>
+        <p className="text-sm text-muted mt-2">Your active public links. Open an answer or choose whether its question and images are included.</p>
+      </div>}
       <div className="relative">
         <svg
           className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted pointer-events-none"
@@ -809,12 +1196,12 @@ function HistoryView({ rate, onUnauth }) {
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="Search"
-          className="w-full bg-panel border border-edge rounded-xl text-sm pl-10 pr-4 py-2.5 outline-none focus:border-accent/60 transition-colors"
+          className="w-full bg-panel border border-edge text-sm pl-10 pr-4 py-2.5 outline-none focus:border-accent/60 transition-colors"
         />
       </div>
 
       {loaded && items.length === 0 && (
-        <div className="text-muted text-sm px-1">{q.trim() ? 'No matches.' : 'No prompts yet.'}</div>
+        <div className="text-muted text-sm px-1">{q.trim() ? 'No matches.' : sharedOnly ? 'No shared answers yet. Publish an answer from Ask or History to see it here.' : 'No prompts yet.'}</div>
       )}
 
       {groups.map((w) => {
@@ -843,28 +1230,46 @@ function HistoryView({ rate, onUnauth }) {
                   </button>
 
                   {dOpen && day.items.map((it) => (
+                    <SwipeRow key={it.id} onDelete={() => del(it.id)}>
                     <div
                       key={it.id}
-                      className="group flex items-start gap-2 bg-panel border border-edge hover:border-accent/50 rounded-xl px-4 py-3 transition-colors"
+                      className="group flex items-start gap-2 bg-panel border border-edge hover:border-accent/50 px-4 py-3 transition-colors"
                     >
-                      <button onClick={() => open(it.id)} className="flex-1 min-w-0 text-left">
-                        <div className="flex items-center gap-3 text-xs text-muted mb-1.5">
+                      <div className="flex-1 min-w-0">
+                      <button onClick={() => open(it.id)} className="w-full text-left">
+                        <div className="history-meta flex items-center gap-3 text-xs text-muted mb-1.5">
                           <span className="text-accent2 font-medium">{it.model_label}</span>
-                          {it.reasoning && <span>{it.reasoning}</span>}
                           <span>{fmtTime(it.created_at)}</span>
                           <span className="ml-auto">{zl(it.cost_usd * rate)}</span>
                           <span>{fmtDuration(it.duration_ms)}</span>
                         </div>
                         <div className="text-sm text-[#dcdce2] line-clamp-2">{it.prompt_preview}</div>
                       </button>
-                      <button
-                        onClick={(e) => del(it.id, e)}
-                        title="Delete"
-                        className="shrink-0 text-muted hover:text-red-400 text-sm opacity-0 group-hover:opacity-100 transition-opacity"
-                      >
-                        ✕
-                      </button>
+                        {it.images && it.images.length > 0 && (
+                          <div className="mt-2">
+                            <AttachmentStrip images={it.images} size={22} />
+                          </div>
+                        )}
+                      </div>
+                      <div className="shrink-0 flex items-center gap-2.5 opacity-100 transition-opacity">
+                        {sharedOnly && it.share_token && <a href={'/s/' + it.share_token} target="_blank" rel="noopener noreferrer" className="text-accent2 text-xs" aria-label="Open public answer">Open ↗</a>}
+                        <button
+                          onClick={(e) => toggleShare(it, e)}
+                          title={it.share_token ? 'Manage sharing' : 'Share'}
+                          className="font-mono text-[10px] text-muted hover:text-accent2"
+                        >
+                          {it.share_token ? 'Shared' : 'Share'}
+                        </button>
+                        <button
+                          onClick={(e) => del(it.id, e)}
+                          title="Delete"
+                          className="text-muted hover:text-red-400 text-sm"
+                        >
+                          ✕
+                        </button>
+                      </div>
                     </div>
+                    </SwipeRow>
                   ))}
                 </div>
               );
@@ -876,18 +1281,29 @@ function HistoryView({ rate, onUnauth }) {
       {loading && <div className="flex justify-center py-3"><span className="spinner" /></div>}
       <div ref={sentinelRef} className="h-1" />
 
+      {shareItem !== null && <ShareDialog itemId={shareItem} onClose={() => setShareItem(null)} onChanged={shareChanged} onUnauth={onUnauth} />}
+      {deleteItem !== null && <Modal title="Delete answer?" onClose={() => { if (!deleting) setDeleteItem(null); }}>
+        <p className="text-muted text-sm">This removes the answer and its share link. This cannot be undone.</p>
+        {deleteError && <p role="alert" className="text-red-400 mt-4">{deleteError}</p>}
+        <div className="flex gap-3 mt-6">
+          <button className="deck-button" disabled={deleting} onClick={() => setDeleteItem(null)}>Keep answer</button>
+          <button className="deck-button danger" disabled={deleting} onClick={confirmDelete}>{deleting ? 'Deleting…' : 'Delete permanently'}</button>
+        </div>
+      </Modal>}
+
       {detail && (
         <div
           className="fixed inset-0 z-20 bg-black/70 backdrop-blur-sm grid place-items-center p-4"
           onClick={() => setDetail(null)}
         >
           <div
-            className="bg-panel border border-edge rounded-2xl w-full max-w-2xl max-h-[85vh] overflow-y-auto p-5 fade-in"
+            className="bg-panel border border-edge w-full max-w-2xl max-h-[85vh] overflow-y-auto p-5 fade-in"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between mb-4">
               <span className="text-xs text-muted">{fmtTime(detail.created_at)}</span>
               <div className="flex items-center gap-4">
+                <button onClick={(e) => toggleShare(detail, e)} className="text-muted hover:text-accent2 text-sm">{detail.share_token ? 'Manage sharing' : 'Share'}</button>
                 <button
                   onClick={(e) => del(detail.id, e)}
                   className="text-muted hover:text-red-400 text-sm"
@@ -902,10 +1318,29 @@ function HistoryView({ rate, onUnauth }) {
                 </button>
               </div>
             </div>
-            <div className="text-xs uppercase tracking-wide text-muted mb-1.5">Prompt</div>
-            <div className="bg-panel2 border border-edge rounded-xl px-4 py-3 text-sm whitespace-pre-wrap mb-5">
+            <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-muted mb-1.5">
+              <span>Prompt</span>
+              {detail.brief && <span className="font-mono text-[10px] normal-case text-accent2">brief</span>}
+            </div>
+            <div className="bg-panel2 border border-edge px-4 py-3 text-sm whitespace-pre-wrap">
               {detail.prompt}
             </div>
+            {detail.images && detail.images.length > 0 && (
+              <div className="mt-3">
+                <AttachmentStrip images={detail.images} size={76} />
+              </div>
+            )}
+            {/* Everything the Settings toggles prepended, kept out of the prompt
+                itself so it never travels with a shared answer. */}
+            {detail.context && (
+              <div className="mt-2 mb-5">
+                <div className="text-xs uppercase tracking-wide text-muted/70 mb-1.5">Context sent with it</div>
+                <div className="bg-panel2/50 border border-edge/60 px-4 py-3 font-mono text-[11px] text-muted whitespace-pre-wrap">
+                  {detail.context}
+                </div>
+              </div>
+            )}
+            {!detail.context && <div className="mb-5" />}
             <div className="text-xs uppercase tracking-wide text-muted mb-2">Answer</div>
             <Meta result={detail} rate={rate} />
             <Markdown text={detail.answer} />
@@ -916,65 +1351,60 @@ function HistoryView({ rate, onUnauth }) {
   );
 }
 
-function SettingsView({ settings, setSettings }) {
+function ContextControls({ settings, setSettings, onEdit }) {
+  return (
+    <fieldset className="border border-edge bg-panel px-4 py-3 mb-4">
+      <legend className="sr-only">Prompt context</legend>
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <span className="font-mono text-[10px] uppercase tracking-widest text-muted">Context</span>
+        <button type="button" onClick={onEdit} className="font-mono text-[11px] text-accent2 hover:text-white">Edit settings →</button>
+      </div>
+      <div className="flex flex-wrap gap-x-5 gap-y-3">
+        {[['nowOn', 'Date & time'], ['locOn', 'Location'], ['userOn', 'Personal context']].map(([key, label]) => (
+          <label key={key} className="flex items-center gap-2 text-xs cursor-pointer">
+            <input type="checkbox" className="settings-toggle" checked={settings[key]} onChange={(e) => setSettings((prev) => ({ ...prev, [key]: e.target.checked }))} />
+            <span>{label}</span>
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
+function SettingsView({ settings, setSettings, onBack }) {
   const upd = (patch) => setSettings((s) => ({ ...s, ...patch }));
   return (
-    <div className="bg-panel border border-edge rounded-2xl p-5 space-y-5 fade-in">
-      <p className="text-sm text-muted">
-        Context is attached above every prompt. Toggle what gets sent to the model.
-      </p>
-
-      <label className="flex items-center gap-3 cursor-pointer">
-        <input
-          type="checkbox"
-          checked={settings.nowOn}
-          onChange={(e) => upd({ nowOn: e.target.checked })}
-          className="w-4 h-4 accent-accent"
-        />
-        <span className="text-sm">Date &amp; time (now)</span>
-      </label>
-
-      <div className="space-y-2">
-        <label className="flex items-center gap-3 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={settings.locOn}
-            onChange={(e) => upd({ locOn: e.target.checked })}
-            className="w-4 h-4 accent-accent"
-          />
-          <span className="text-sm">Location</span>
-        </label>
-        <input
-          type="text"
-          value={settings.locText}
-          onChange={(e) => upd({ locText: e.target.value })}
-          disabled={!settings.locOn}
-          placeholder="e.g. Bielsko-Biała"
-          className="w-full bg-panel2 border border-edge rounded-lg text-sm px-3 py-2 outline-none focus:border-accent/60 disabled:opacity-40"
-        />
+    <div className="space-y-5 fade-in max-w-2xl">
+      <button type="button" onClick={onBack} className="font-mono text-xs text-accent2 hover:text-white">← Back to prompt</button>
+      <div className="flex items-center justify-between font-mono text-[10px] uppercase tracking-widest">
+        <h1 className="text-accent2">Prompt context</h1>
+        <span className="text-good">Auto-saved locally</span>
       </div>
-
-      <div className="space-y-2">
-        <label className="flex items-center gap-3 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={settings.userOn}
-            onChange={(e) => upd({ userOn: e.target.checked })}
-            className="w-4 h-4 accent-accent"
-          />
-          <span className="text-sm">User data</span>
+      <p className="text-sm text-muted">Choose the details included with your questions.</p>
+      <section className="settings-section corner-panel">
+        <label className="flex items-center justify-between gap-4 cursor-pointer">
+          <span className="font-mono text-xs uppercase tracking-wider">01 / Date &amp; time</span>
+          <input type="checkbox" className="settings-toggle" checked={settings.nowOn} onChange={(e) => upd({ nowOn: e.target.checked })} />
         </label>
-        <textarea
-          value={settings.userText}
-          onChange={(e) => upd({ userText: e.target.value })}
-          disabled={!settings.userOn}
-          rows={3}
-          placeholder="e.g. 20yo, 181cm, 62kg, bulking ~3 months"
-          className="w-full bg-panel2 border border-edge rounded-lg text-sm px-3 py-2 outline-none resize-y focus:border-accent/60 disabled:opacity-40"
-        />
-      </div>
-
-      <p className="text-xs text-muted/70">Saved automatically in this browser.</p>
+        <p className="mt-3">Use the current date and time from your device.</p>
+      </section>
+      <section className="settings-section corner-panel">
+        <label className="flex items-center justify-between gap-4 cursor-pointer">
+          <span className="font-mono text-xs uppercase tracking-wider">02 / Location</span>
+          <input type="checkbox" className="settings-toggle" checked={settings.locOn} onChange={(e) => upd({ locOn: e.target.checked })} />
+        </label>
+        <p className="mt-3 mb-3">Add a city or region for more relevant answers.</p>
+        <input aria-label="Location context" type="text" value={settings.locText} onChange={(e) => upd({ locText: e.target.value })} disabled={!settings.locOn} placeholder="e.g. Bielsko-Biała" className="deck-input w-full disabled:opacity-40" />
+      </section>
+      <section className="settings-section corner-panel">
+        <label className="flex items-center justify-between gap-4 cursor-pointer">
+          <span className="font-mono text-xs uppercase tracking-wider">03 / Personal context</span>
+          <input type="checkbox" className="settings-toggle" checked={settings.userOn} onChange={(e) => upd({ userOn: e.target.checked })} />
+        </label>
+        <p className="mt-3 mb-3">Preferences and background you want the model to consider.</p>
+        <textarea aria-label="Personal context" value={settings.userText} onChange={(e) => upd({ userText: e.target.value })} disabled={!settings.userOn} rows={4} placeholder="e.g. preferred language, interests, or dietary preferences" className="deck-input w-full resize-y disabled:opacity-40" />
+      </section>
+      <p className="font-mono text-[10px] text-muted">These settings are saved in this browser and sent only when enabled.</p>
     </div>
   );
 }
@@ -1009,7 +1439,6 @@ function Main({ onLogout }) {
   const [model, setModel] = useState('');
   const [rate, setRate] = useState(1);
   const [imageLimits, setImageLimits] = useState(null);
-  const [depth, setDepth] = useState('low');
   const [settings, setSettings] = useState(loadSettings);
 
   useEffect(() => {
@@ -1023,11 +1452,6 @@ function Main({ onLogout }) {
   }, []);
 
   const currentModel = models.find((m) => m.id === model) || null;
-
-  // Reset depth to 'low' whenever the model changes.
-  useEffect(() => {
-    setDepth('low');
-  }, [model]);
 
   useEffect(() => {
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) { /* noop */ }
@@ -1062,6 +1486,7 @@ function Main({ onLogout }) {
           <nav className="hidden sm:flex items-center gap-5 ml-8">
             {tabBtn('ask', 'ask')}
             {tabBtn('history', 'history')}
+            {tabBtn('shared', 'shared')}
             {tabBtn('settings', 'settings')}
           </nav>
           <button
@@ -1081,6 +1506,7 @@ function Main({ onLogout }) {
           <div className="sm:hidden border-t border-edge px-5 py-2 flex flex-col bg-ink/95">
             {tabBtn('ask', 'ask')}
             {tabBtn('history', 'history')}
+            {tabBtn('shared', 'shared')}
             {tabBtn('settings', 'settings')}
             <button
               onClick={logout}
@@ -1093,15 +1519,14 @@ function Main({ onLogout }) {
       </header>
 
       <main className="max-w-4xl mx-auto px-5 py-6">
-        {tab === 'ask' && models.length > 0 && (
-          <div className="flex gap-8 items-start">
+        {models.length > 0 && (
+          <div className={tab === 'ask' ? 'flex gap-8 items-start' : 'hidden'}>
             <div className="flex-1 min-w-0 max-w-2xl">
+              <ContextControls settings={settings} setSettings={setSettings} onEdit={() => setTab('settings')} />
               <AskView
                 models={models}
                 model={model}
                 setModel={setModel}
-                depth={depth}
-                setDepth={setDepth}
                 rate={rate}
                 imageLimits={imageLimits}
                 settings={settings}
@@ -1111,8 +1536,9 @@ function Main({ onLogout }) {
             <SessionSidebar model={currentModel} />
           </div>
         )}
-        {tab === 'history' && <HistoryView rate={rate} onUnauth={unauth} />}
-        {tab === 'settings' && <SettingsView settings={settings} setSettings={setSettings} />}
+        {tab === 'history' && <HistoryView key="history" rate={rate} onUnauth={unauth} />}
+        {tab === 'shared' && <HistoryView key="shared" rate={rate} onUnauth={unauth} sharedOnly />}
+        {tab === 'settings' && <SettingsView settings={settings} setSettings={setSettings} onBack={() => setTab('ask')} />}
       </main>
     </div>
   );
@@ -1122,12 +1548,19 @@ function App() {
   const [ready, setReady] = useState(false);
   const [authed, setAuthed] = useState(false);
 
+  const shareMatch = window.location.pathname.match(/^\/s\/([A-Za-z0-9_-]+)/);
+
   useEffect(() => {
+    if (shareMatch) return;
     api('/session')
       .then((r) => r.json())
       .then((d) => { setAuthed(!!d.authenticated); setReady(true); })
       .catch(() => setReady(true));
   }, []);
+
+  if (shareMatch) {
+    return <SharedView token={shareMatch[1]} />;
+  }
 
   if (!ready) {
     return <div className="min-h-screen grid place-items-center"><div className="spinner" /></div>;
@@ -1138,4 +1571,4 @@ function App() {
     : <Login onSuccess={() => setAuthed(true)} />;
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+ReactDOM.createRoot(document.getElementById('root')).render(<ImagePreviewProvider><App /></ImagePreviewProvider>);
