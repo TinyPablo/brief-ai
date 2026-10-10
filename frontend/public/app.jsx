@@ -898,6 +898,10 @@ function HistoryView({ rate, onUnauth }) {
       if (!token) {
         const res = await api('/history/' + it.id + '/share', { method: 'POST' });
         if (res.status === 401) { onUnauth(); return; }
+        if (res.status === 409) {
+          window.alert('This older entry cannot be shared because it may contain personal context.');
+          return;
+        }
         if (!res.ok) return;
         ({ token } = await res.json());
         setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, share_token: token } : x)));

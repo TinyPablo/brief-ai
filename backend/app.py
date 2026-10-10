@@ -927,10 +927,10 @@ def delete_history_item(item_id):
 @require_auth
 def share_history_item(item_id):
     with get_db() as conn, conn.cursor() as cur:
-        cur.execute("SELECT share_token FROM prompts WHERE id = %s", (item_id,))
+        cur.execute("SELECT share_token, prompt_is_raw FROM prompts WHERE id = %s", (item_id,))
         row = cur.fetchone()
         token = row[0] if row else None
-        if row and not token:
+        if row and row[1] and not token:
             token = secrets.token_urlsafe(16)
             cur.execute(
                 "UPDATE prompts SET share_token = %s WHERE id = %s", (token, item_id)
@@ -938,6 +938,8 @@ def share_history_item(item_id):
     conn.close()
     if not row:
         return jsonify(error="not_found"), 404
+    if not row[1]:
+        return jsonify(error="Legacy entries cannot be shared because they may contain personal context."), 409
     return jsonify(token=token)
 
 
@@ -959,10 +961,13 @@ def shared_item(token):
         return jsonify(error="not_found"), 404
     with get_db() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
-            "SELECT id, created_at, model, prompt, answer FROM prompts WHERE share_token = %s",
+            "SELECT id, created_at, model, prompt, answer, prompt_is_raw FROM prompts WHERE share_token = %s",
             (token,),
         )
         row = cur.fetchone()
+        # Old prompts may include personal context, even if a token already exists.
+        if row and not row["prompt_is_raw"]:
+            row = None
         images = fetch_prompt_images(cur, [row["id"]]).get(row["id"], []) if row else []
     conn.close()
     if not row:
@@ -979,10 +984,10 @@ def shared_item(token):
 def _shared_prompt_id(token):
     """The prompt id behind a share token, or None if the token doesn't resolve."""
     with get_db() as conn, conn.cursor() as cur:
-        cur.execute("SELECT id FROM prompts WHERE share_token = %s", (token,))
+        cur.execute("SELECT id, prompt_is_raw FROM prompts WHERE share_token = %s", (token,))
         row = cur.fetchone()
     conn.close()
-    return row[0] if row else None
+    return row[0] if row and row[1] else None
 
 
 def _serve_shared_image(token, sha, want_thumb):

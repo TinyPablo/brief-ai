@@ -294,8 +294,12 @@ is just a more expensive prompt.
 
 ## Public share links
 
-Any prompt in History can be turned into a public, no-login link
+Any prompt stored with `prompt_is_raw = true` in History can be turned into a public, no-login link
 (`/s/<token>`) from the app, and revoked the same way.
+
+Legacy entries may contain personal context inside `prompt`, so sharing them
+returns 409. Public links and image routes also reject legacy entries with 404,
+even if they already have a share token. They remain available in private History.
 
 - `prompts.share_token` - `NULL` until shared, a `secrets.token_urlsafe(16)`
   once it is. A unique partial index (`WHERE share_token IS NOT NULL`) keeps
