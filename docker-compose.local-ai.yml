@@ -1,0 +1,64 @@
+# Optional overlay: docker compose -f docker-compose.yml -f docker-compose.local-ai.yml up -d --build
+services:
+  backend:
+    environment:
+      LOCAL_AI_URL: http://local-ai:8080
+      LOCAL_AI_API_KEY: ${LOCAL_AI_API_KEY:-}
+      DEFAULT_MODEL: ${DEFAULT_MODEL:-gemini-3.1-flash-lite}
+    networks:
+      - default
+      - inference
+
+  local-ai:
+    build: ./local-ai
+    restart: "on-failure:3"
+    cpus: 1.0
+    mem_limit: 3g
+    memswap_limit: 3g
+    pids_limit: 64
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    user: "65534:65534"
+    tmpfs:
+      - /tmp:size=16m
+    volumes:
+      - ./models:/models:ro
+    networks:
+      - inference
+    command:
+      - --model
+      - /models/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf
+      - --alias
+      - local-qwen2.5-coder-1.5b-q4_k_m
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --ctx-size
+      - "8192"
+      - --parallel
+      - "1"
+      - --threads-http
+      - "2"
+      - --threads
+      - "1"
+      - --threads-batch
+      - "1"
+      - --batch-size
+      - "32"
+      - --ubatch-size
+      - "32"
+      - --n-predict
+      - "1024"
+      - --gpu-layers
+      - "0"
+      - --sse-ping-interval
+      - "1"
+      - --no-context-shift
+      - --no-webui
+      - --offline
+
+networks:
+  inference:
+    internal: true

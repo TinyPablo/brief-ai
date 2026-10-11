@@ -20,7 +20,7 @@ persistent session, so you log in once and stay in across tabs.
   **Google Gemini** (3.1 Flash Lite, 3.8 Flash), and **OpenAI** (GPT-5.4 Nano, GPT-6 Astra),
   each showing a per-prompt price estimate.
 - Reasoning uses low effort automatically on supported models, without a UI selector.
-- Attach multiple images to a prompt (drag & drop, paste, or the file picker) on any model -
+- Attach multiple images to a prompt (drag & drop, paste, or the file picker) on cloud models -
   up to 20 images, 10MB per image, 24MB total per prompt. Limits are enforced both in the
   browser and on the server. Attachments are stored and shown again in History.
 - Publish from the answer or History with independent question/image visibility controls,
@@ -39,10 +39,16 @@ persistent session, so you log in once and stay in across tabs.
 
 ## Stack
 
-- **Frontend** - React + Tailwind (loaded from CDN, no build step), served by nginx.
-- **Backend** - Python / Flask + gunicorn, talking to the Anthropic API.
+- **Frontend** - React + Tailwind (vendored locally, no build step), served by nginx.
+- **Backend** - Python / Flask + gunicorn, with cloud providers and optional local inference.
 - **Database** - PostgreSQL.
 - **Orchestration** - Docker Compose.
+
+## Optional local AI
+
+Run a resource-limited Qwen coding model without a cloud API using the optional
+Compose overlay. See [local AI setup, API, limits and benchmark](docs/local-ai.md).
+Frontend dependencies are served locally so the interface can load without CDNs.
 
 ## Configuration
 
@@ -139,7 +145,7 @@ docker volume rm brief-ai_db_data
   ~1500 output tokens. Both the rate and the assumption are constants in `backend/app.py`.
   Gemini 3.8 Flash is listed at its standard rate, not the introductory one running until
   2026-12-31, so estimates never understate what it will cost from January.
-- Image attachments aren't blocked on any model - attaching to a pricier model just costs
+- Image attachments aren't blocked on cloud models - attaching to a pricier model just costs
   more, which is a deliberate tradeoff, not a bug.
 - Attachments are stored in Postgres next to the prompt, so they show up again in History.
   They're keyed by content hash, which means the same file attached to several prompts is

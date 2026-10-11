@@ -20,6 +20,7 @@ from flask import Flask, jsonify, request, session
 from google import genai
 from google.genai import types as genai_types
 from openai import OpenAI
+import local_inference
 
 TOTP_SECRET = os.environ.get("TOTP_SECRET", "")
 if not re.fullmatch(r"[A-Z2-7]+=*", TOTP_SECRET):
@@ -38,7 +39,7 @@ if not SECRET_KEY:
 DATABASE_URL = os.environ["DATABASE_URL"]
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "true").lower() == "true"
 
-anthropic_client = Anthropic()  # reads ANTHROPIC_API_KEY from the environment
+anthropic_client = Anthropic() if os.environ.get("ANTHROPIC_API_KEY") else None
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
@@ -58,12 +59,17 @@ SYSTEM_PROMPT = (
 # the pricing needed to value a fallback-served response. Retiring a model
 # means taking it out of MODEL_ORDER below, not out of here.
 #
-# provider: "anthropic" | "google" | "openai"; input/output priced in USD per
+# provider: "anthropic" | "google" | "openai" | "local"; input/output priced in USD per
 # 1M tokens. "reasoning" (optional) retains the effort mappings for "low" and
 # "max", to the provider-specific params that give this model its lowest and
 # highest reasoning effort. Models without a "reasoning" key have no depth
 # control at all - they don't support adjustable reasoning.
 MODELS = {
+    local_inference.MODEL_ID: {
+        "label": "Qwen Coder 1.5B (local)", "provider": "local",
+        "input": 0, "output": 0, "context_window": local_inference.CONTEXT,
+        "supports_images": False, "max_output_tokens": local_inference.MAX_OUTPUT,
+    },
     "gemini-3.1-flash-lite": {
         "label": "Gemini 3.1 Flash Lite", "provider": "google", "input": 0.25, "output": 1.50, "context_window": 1_000_000,
         "reasoning": {"low": {"effort": "low"}, "max": {"effort": "high"}},
@@ -108,9 +114,13 @@ MODEL_ORDER = [
     "gpt-5.4-nano",
     "gpt-6-astra",
 ]
+if os.environ.get("LOCAL_AI_URL"):
+    MODEL_ORDER.append(local_inference.MODEL_ID)
 SELECTABLE_MODELS = set(MODEL_ORDER)
-PROVIDER_LABELS = {"anthropic": "Anthropic", "google": "Google Gemini", "openai": "OpenAI"}
-DEFAULT_MODEL = "gemini-3.1-flash-lite"
+PROVIDER_LABELS = {"local": "Local AI", "anthropic": "Anthropic", "google": "Google Gemini", "openai": "OpenAI"}
+DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", "gemini-3.1-flash-lite")
+if DEFAULT_MODEL not in SELECTABLE_MODELS:
+    raise RuntimeError("DEFAULT_MODEL must be an enabled model")
 
 MAX_TOKENS = 16384
 LOGIN_COOLDOWN = 3.0
@@ -529,6 +539,8 @@ def require_auth(view):
 
 
 def call_anthropic(model, prompt, depth, images=None):
+    if anthropic_client is None:
+        raise RuntimeError("ANTHROPIC_API_KEY is not configured")
     cfg = MODELS[model]
     content = []
     for img in images or []:
@@ -740,6 +752,8 @@ def config():
             "output": cfg["output"],
             "context_window": cfg["context_window"],
             "est_pln": estimate_pln(cfg),
+            "supports_images": cfg.get("supports_images", True),
+            "max_output_tokens": cfg.get("max_output_tokens", MAX_TOKENS),
         })
     return jsonify(
         models=models,
@@ -788,12 +802,29 @@ def generate():
     provider = MODELS[model]["provider"]
     start = time.perf_counter()
     try:
-        if provider == "google":
+        if provider == "local":
+            if images:
+                raise local_inference.LocalError("images_not_supported", "Local AI supports text only. Remove the images or select another model.", 400)
+            response = local_inference.generate([
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": composed},
+            ])
+            choice = response["choices"][0]
+            result = {
+                "answer": choice["message"]["content"] or "_No response._",
+                "input_tokens": response["usage"]["prompt_tokens"],
+                "output_tokens": response["usage"]["completion_tokens"],
+                "stop_reason": choice["finish_reason"],
+                "served": local_inference.MODEL_ID,
+            }
+        elif provider == "google":
             result = call_gemini(model, composed, depth, images)
         elif provider == "openai":
             result = call_openai(model, composed, depth, images)
         else:
             result = call_anthropic(model, composed, depth, images)
+    except local_inference.LocalError as exc:
+        return jsonify(error=exc.code, detail=exc.detail), exc.status
     except Exception as exc:  # surface API/network errors to the client
         traceback.print_exc()
         return jsonify(error="api_error", detail=str(exc)), 502
@@ -1119,6 +1150,33 @@ def image_full(sha):
 @require_auth
 def image_thumb(sha):
     return _serve_image(sha, want_thumb=True)
+
+
+@app.route("/api/local/v1/models", methods=["GET"])
+@app.route("/api/local/v1/chat/completions", methods=["POST"])
+def local_api():
+    """A small text-only API; token auth is separate from browser sessions."""
+    key = os.environ.get("LOCAL_AI_API_KEY", "")
+    if not key or not secrets.compare_digest(request.headers.get("Authorization", "").encode(), ("Bearer " + key).encode()):
+        return jsonify(error={"message": "Unauthorized", "type": "authentication_error"}), 401
+    if not os.environ.get("LOCAL_AI_URL"):
+        return jsonify(error={"message": "Local AI is disabled", "type": "local_unavailable"}), 503
+    if request.method == "GET":
+        return jsonify(object="list", data=[{"id": local_inference.MODEL_ID, "object": "model", "owned_by": "local"}])
+    if request.content_length and request.content_length > 1_000_000:
+        return jsonify(error={"message": "Request body is too large", "type": "invalid_request_error"}), 413
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(error={"message": "Expected a JSON object", "type": "invalid_request_error"}), 400
+    if data.get("model") != local_inference.MODEL_ID:
+        return jsonify(error={"message": "Unknown model", "type": "invalid_request_error"}), 400
+    unsupported = set(data) - {"model", "messages", "max_tokens", "stream"}
+    if data.get("stream", False) is not False or unsupported:
+        return jsonify(error={"message": "Supported fields: model, messages, max_tokens, stream=false", "type": "invalid_request_error"}), 400
+    try:
+        return jsonify(local_inference.generate(data.get("messages"), data.get("max_tokens", local_inference.MAX_OUTPUT)))
+    except local_inference.LocalError as exc:
+        return jsonify(error={"message": exc.detail, "type": exc.code}), exc.status
 
 
 init_db()

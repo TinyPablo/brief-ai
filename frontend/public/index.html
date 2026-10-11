@@ -6,14 +6,12 @@
   <meta name="color-scheme" content="dark" />
   <title>Brief AI</title>
 
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+  <link href="/vendor/fonts.css" rel="stylesheet" />
 
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css" />
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
+  <link rel="stylesheet" href="/vendor/highlight.css" />
+  <link rel="stylesheet" href="/vendor/katex.css" />
 
-  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/vendor/tailwind.js"></script>
   <script>
     tailwind.config = {
       theme: {
@@ -197,14 +195,14 @@
 <body class="font-sans text-[#e6e6ec] antialiased">
   <div id="root"></div>
 
-  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/marked-katex-extension@5.1.4/lib/index.umd.js"></script>
+  <script src="/vendor/react.js" crossorigin></script>
+  <script src="/vendor/react-dom.js" crossorigin></script>
+  <script src="/vendor/babel.js"></script>
+  <script src="/vendor/marked.js"></script>
+  <script src="/vendor/purify.js"></script>
+  <script src="/vendor/highlight.js"></script>
+  <script src="/vendor/katex.js"></script>
+  <script src="/vendor/marked-katex.js"></script>
 
   <script type="text/babel" src="/app.jsx"></script>
 </body>

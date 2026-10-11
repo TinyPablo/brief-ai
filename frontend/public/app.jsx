@@ -756,9 +756,14 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
     () => images.reduce((s, im) => s + imageTokenEstimate(im.width, im.height), 0),
     [images],
   );
+  const unsupportedImages = currentModel?.supports_images === false && images.length > 0;
   const overLimit = images.length > limits.max_images || totalImageBytes > limits.max_total_mb * 1e6;
 
   const addFiles = async (fileList) => {
+    if (currentModel?.supports_images === false) {
+      setImageError("Local AI supports text only. Paste your code into the prompt.");
+      return;
+    }
     const files = Array.from(fileList || []).filter((f) => limits.allowed_types.includes(f.type));
     if (!files.length) return;
     let entries;
@@ -814,7 +819,7 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
   }, [prompt, currentModel, settings, imagesTokenTotal, rate, images.length]);
 
   const send = async () => {
-    if (!prompt.trim() || loading || overLimit) return;
+    if (!prompt.trim() || loading || overLimit || unsupportedImages) return;
     const context = buildContext(settings);
     setLoading(true);
     setResult(null);
@@ -877,7 +882,7 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
     });
   };
 
-  const sendDisabled = loading || !prompt.trim() || overLimit;
+  const sendDisabled = loading || !prompt.trim() || overLimit || unsupportedImages;
 
   return (
     <div className="space-y-4">
@@ -927,7 +932,8 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
           <button
             type="button"
             onClick={() => fileInputRef.current && fileInputRef.current.click()}
-            title="Attach images"
+            disabled={currentModel?.supports_images === false}
+            title={currentModel?.supports_images === false ? "This model supports text only" : "Attach images"}
             className="flex items-center gap-1.5 text-muted hover:text-white transition-colors"
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -979,6 +985,13 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
           </div>
         </div>
       </div>
+
+      {currentModel?.provider === "local" && (
+        <p className="font-mono text-xs text-muted" role="status">
+          Local AI · 8,192-token context · up to 1,024 output tokens · text only · may take up to 4 minutes.
+          {unsupportedImages ? " Remove attached images to continue." : " Paste code with filenames to include several files."}
+        </p>
+      )}
 
       {imageError && (
         <div className="border border-bad/40 bg-bad/10 text-bad font-mono text-[11px] px-3.5 py-2.5">
