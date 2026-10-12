@@ -40,8 +40,11 @@ def test_every_catalog_entry_can_label_and_price_a_history_row(model_id):
     cfg = MODELS[model_id]
     assert cfg["label"]
     assert cfg["provider"] in PROVIDER_LABELS
-    assert cfg["input"] > 0
-    assert cfg["output"] > 0
+    if cfg["provider"] == "local":
+        assert cfg["input"] == cfg["output"] == 0
+    else:
+        assert cfg["input"] > 0
+        assert cfg["output"] > 0
 
 
 @pytest.mark.parametrize("model_id", MODEL_ORDER)
@@ -50,7 +53,7 @@ def test_every_selectable_entry_can_fill_out_api_config(model_id):
     MODEL_ORDER; a retired entry never reaches that code path."""
     cfg = MODELS[model_id]
     assert cfg["context_window"] > 0
-    assert estimate_pln(cfg) > 0
+    assert estimate_pln(cfg) >= 0
 
 
 @pytest.mark.parametrize("model_id", MODEL_ORDER)

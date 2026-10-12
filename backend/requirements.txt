@@ -5,3 +5,5 @@ anthropic
 google-genai
 openai
 pyotp==2.9.0
+
+httpx==0.28.1
