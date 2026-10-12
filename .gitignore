@@ -10,3 +10,6 @@ venv/
 
 .DS_Store
 *.log
+
+# Local model weights are backed up separately, never committed.
+models/

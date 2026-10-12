@@ -80,6 +80,24 @@ def _stored(captured):
     }
 
 
+def test_local_answer_is_saved_with_stable_model_and_zero_provider_cost(sent_and_stored, monkeypatch):
+    local = appmod.local_inference
+    monkeypatch.setattr(appmod, "SELECTABLE_MODELS", appmod.SELECTABLE_MODELS | {local.MODEL_ID})
+    def answer(messages):
+        assert messages[0]["role"] == "system"
+        assert messages[1]["content"] == "fix my code"
+        return {"choices": [{"message": {"content": "corrected code"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 20, "completion_tokens": 30}}
+    monkeypatch.setattr(local, "generate", answer)
+    response = _post({"model": local.MODEL_ID, "prompt": "fix my code"})
+    assert response.status_code == 200
+    assert response.json["reasoning"] is None
+    assert response.json["cost_usd"] == 0
+    assert response.json["model"] == local.MODEL_ID
+    assert response.json["output_tokens"] == 30
+    assert _stored(sent_and_stored)["answer"] == "corrected code"
+
+
 def test_model_sees_the_composed_text(sent_and_stored):
     res = _post({"model": "claude-haiku-4-5", "prompt": "jak to działa", "context": CONTEXT})
     assert res.status_code == 200
@@ -119,7 +137,7 @@ def test_oversized_context_is_refused(sent_and_stored):
     assert "prompt_to_model" not in sent_and_stored  # refused before the provider call
 
 
-@pytest.mark.parametrize("model", appmod.MODEL_ORDER)
+@pytest.mark.parametrize("model", [m for m in appmod.MODEL_ORDER if appmod.MODELS[m]["provider"] != "local"])
 @pytest.mark.parametrize("requested_depth", [None, "max"])
 def test_generation_always_uses_low_effort(sent_and_stored, model, requested_depth):
     body = {"model": model, "prompt": "test"}
