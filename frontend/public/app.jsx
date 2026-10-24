@@ -1320,7 +1320,7 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
       {restoring && <p className="text-sm text-muted" role="status">Loading conversation…</p>}
       {conversation?.messages.map((message) => (
         <div key={message.id} className={'corner-panel border border-edge ' + (message.role === 'user' ? 'bg-panel2' : 'bg-panel')}>
-          <div className="flex items-center gap-3 px-4 py-2 border-b border-edge font-mono text-[11px] text-muted">
+          <div className="message-toolbar flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2 border-b border-edge font-mono text-[11px] text-muted">
             <span>{message.role === 'user' ? 'You' : models.find((m) => m.id === message.model)?.label || message.model}</span>
             <time dateTime={message.created_at}>{fmtTime(message.created_at)}</time>
             {message.role === 'user'
