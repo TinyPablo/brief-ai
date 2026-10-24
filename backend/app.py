@@ -282,6 +282,9 @@ def init_db():
             cur.execute(PROMPT_IMAGES_INDEX_SQL)
             for statement in MIGRATIONS:
                 cur.execute(statement)
+            from conversation_schema import CONVERSATION_MIGRATIONS
+            for statement in CONVERSATION_MIGRATIONS:
+                cur.execute(statement)
     except psycopg2.Error as exc:
         print("init_db:", exc)
     finally:
@@ -492,6 +495,9 @@ def delete_orphan_images(cur, shas):
            WHERE sha256 = ANY(%s)
              AND NOT EXISTS (
                  SELECT 1 FROM prompt_images WHERE image_sha = images.sha256
+             )
+             AND NOT EXISTS (
+                 SELECT 1 FROM conversation_message_images WHERE image_sha = images.sha256
              )""",
         (list(shas),),
     )
