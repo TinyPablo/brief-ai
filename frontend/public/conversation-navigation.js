@@ -81,7 +81,11 @@
       copy.removeAttribute('data-conversation-view'); copy.removeAttribute('data-conversation-id');
       copy.querySelectorAll('[id]').forEach((node) => node.removeAttribute('id'));
       copy.inert = true;
-      copy.style.transform = `translateY(${(rect.top - top) / scale}px)`;
+      this.offsetY = (rect.top - top) / scale;
+      copy.style.transform = `translateY(${this.offsetY}px)`;
+      copy.style.background = '#0d0c0a';
+      copy.style.minHeight = Math.max(0, innerHeight - top) / scale + 'px';
+      frame.style.background = 'transparent';
       const originals = element.querySelectorAll('textarea, input, select');
       copy.querySelectorAll('textarea, input, select').forEach((node, index) => { node.value = originals[index].value; });
       frame.append(copy);
@@ -95,10 +99,10 @@
       this.played = true;
       const version = this.version;
       const width = frame.clientWidth;
-      const options = { duration: 320, easing: 'cubic-bezier(.22,.68,.18,1)', fill: 'both' };
+      const options = { duration: 360, easing: 'cubic-bezier(.22,.68,.18,1)', fill: 'both' };
       this.animations = [
-        frame.animate([{ transform: 'translateX(0)' }, { transform: `translateX(${-this.direction * width}px)` }], options),
-        element.animate([{ transform: `translateX(${this.direction * width}px)` }, { transform: 'translateX(0)' }], options),
+        frame.firstElementChild.animate([{ transform: `translate(0, ${this.offsetY}px)`, opacity: 1 }, { transform: `translate(${-this.direction * width}px, ${this.offsetY}px)`, opacity: 0 }], options),
+        element.animate([{ transform: `translateX(${this.direction * width}px)`, opacity: 0 }, { transform: 'translateX(0)', opacity: 1 }], options),
       ];
       Promise.all(this.animations.map((animation) => animation.finished.catch(() => {}))).then(() => {
         if (version === this.version) this.cancel();

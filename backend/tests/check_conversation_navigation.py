@@ -63,6 +63,11 @@ def check_navigation():
             page.goto(f'http://127.0.0.1:{server.server_port}')
             active = page.locator('[data-conversation-view]:not([hidden])')
             expect(active.locator('textarea')).to_be_visible()
+            expect(page.get_by_role('button', name='Close conversation', exact=True)).to_be_visible()
+            expect(page.locator('.conversation-actions')).to_have_count(0)
+            page.evaluate('window.motion = []')
+            page.get_by_role('button', name='New conversation', exact=True).click()
+            page.wait_for_function("window.motion.some(a=>a.frames.some(f=>String(f.transform).includes('scale')))")
             expect(page.get_by_text('Edit settings →', exact=True)).to_have_count(0)
             expect(page.get_by_role('checkbox')).to_have_count(0)
             page.get_by_role('button', name='settings', exact=True).click()
@@ -77,7 +82,7 @@ def check_navigation():
             expect(active).to_have_attribute('data-conversation-id', cid)
             assert 'Kraków' in body['context'] and 'Prefer Polish' in body['context']
             # A completed answer keeps polling only while its title job is pending.
-            page.get_by_role('button', name='+ New conversation', exact=True).click()
+            page.get_by_role('button', name='New conversation', exact=True).click()
             expect(page.get_by_role('button', name='Previous conversation: Weekend w Krakowie')).to_be_visible(timeout=10000)
             assert reads >= 2
             active.locator('textarea').fill('Beta')
@@ -86,7 +91,7 @@ def check_navigation():
             assert side['x'] + side['width'] <= stage['x'], 'Side label overlaps conversation'
             page.screenshot(path='/private/tmp/brief-navigation-desktop.png', full_page=True)
             page.evaluate('window.motion = []')
-            page.get_by_role('button', name='+ New conversation', exact=True).click()
+            page.get_by_role('button', name='New conversation', exact=True).click()
             active.locator('textarea').fill('Gamma')
             page.wait_for_function('window.motion.length >= 2', timeout=3000)
             # Trackpad momentum is consumed as one gesture, rather than skipping chats.

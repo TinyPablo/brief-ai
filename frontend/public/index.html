@@ -216,6 +216,20 @@
       .conversation-navigation > div:first-child { grid-column: 1; grid-row: 2; }
       .conversation-navigation > div:last-child { grid-column: 2; grid-row: 2; }
     }
+
+    .conversation-navigation { min-height: 0; margin-bottom: 0; }
+    .conversation-navigation > div:first-child, .conversation-navigation > div:last-child { top: 16px; }
+    .conversation-navigation:not(:has(button)) { display: none; }
+    .header-new-conversation { margin-left: auto; }
+    .header-new-conversation, .header-close-conversation { width: 44px; height: 44px; display: inline-flex; align-items: center; justify-content: center; color: #9c9286; font-family: 'Space Mono', monospace; font-size: 24px; }
+    .header-close-conversation { font-size: 22px; }
+    .header-new-conversation:hover, .header-close-conversation:hover { color: #e6a84a; }
+    .header-close-conversation ~ button.hidden.sm\:block { margin-left: 8px; }
+    [data-conversation-view] { transform-origin: 50% 50%; }
+    @media (max-width: 1149px) {
+      .conversation-navigation { margin-bottom: 16px; gap: 0 16px; }
+      .conversation-navigation > div:first-child, .conversation-navigation > div:last-child { grid-row: 1; position: static; }
+    }
   </style>
 </head>
 <body class="font-sans text-[#e6e6ec] antialiased">
