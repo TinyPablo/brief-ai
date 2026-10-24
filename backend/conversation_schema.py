@@ -77,4 +77,5 @@ CONVERSATION_MIGRATIONS += (
     'ALTER TABLE conversations ADD COLUMN IF NOT EXISTS title_output_tokens INTEGER NOT NULL DEFAULT 0',
     'ALTER TABLE conversations ADD COLUMN IF NOT EXISTS title_cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0',
     "CREATE INDEX IF NOT EXISTS conversations_title_queue_idx ON conversations(created_at) WHERE title_status = 'queued'",
+    "CREATE INDEX IF NOT EXISTS conversations_title_running_idx ON conversations(id) WHERE title_status = 'running'",
 )

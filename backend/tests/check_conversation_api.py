@@ -184,6 +184,27 @@ def check_api():
             assert cur.fetchone()['count'] == 0
         assert len(client().get('/api/conversations').json['items']) == 4
         assert client().get('/api/conversations?q=does-not-exist').json['items'] == []
+        # Title failures leave the answer readable and are not retried automatically.
+        api.call_gemini = failing
+        assert run_title(api)
+        assert client().get('/api/conversations/' + interrupted['id']).json['title_status'] == 'failed'
+        from conversation_titles import recover_titles
+        with database(api) as cur:
+            cur.execute("UPDATE conversations SET title_status = 'running' WHERE id = %s", (interrupted['id'],))
+        recover_titles(api)
+        assert client().get('/api/conversations/' + interrupted['id']).json['title_status'] == 'failed'
+        assert len(client().get('/api/conversations/' + interrupted['id']).json['messages']) == 2
+
+        # Deleting during title generation must never recreate a conversation.
+        title_target = failed['id']
+        question_id = client().get('/api/conversations/' + title_target).json['messages'][0]['id']
+        def deleting_title(*args, **kwargs):
+            assert client().delete('/api/conversations/' + title_target + '/messages/' + question_id).status_code == 200
+            return dict(answer='Deleted title', input_tokens=1, output_tokens=1, served='gemini-3.1-flash-lite')
+        api.call_gemini = deleting_title
+        assert run_title(api)
+        assert client().get('/api/conversations/' + title_target).status_code == 404
+        api.call_gemini = fake
         print('PASS: API auth, idempotency, concurrent sends, refresh state, provider switching, images, truncation, live worker locking, interrupted recovery and legacy history')
     finally:
         if original_options is None:

@@ -15,6 +15,7 @@ persistent session, so you log in once and stay in across tabs.
 - Automatically saved conversations with follow-ups, per-message timestamps and model switching.
 - Multiple open conversations per browser tab, with independent drafts, images, model selections and scroll positions.
 - Local draft recovery after refresh, instant switching between cached conversations and background reply indicators.
+- Automatic conversation titles, adjacent navigation, touch/trackpad gestures and directional slide transitions.
 - Background generation survives a browser refresh; interrupted worker jobs can be retried explicitly.
 - Delete a user message and all later replies, or delete the first message to remove the conversation.
 - Command Deck interface with matching Settings panels and a Shared tab for active public links.
@@ -34,7 +35,7 @@ persistent session, so you log in once and stay in across tabs.
   request no indexing; personal settings and diagnostics remain private.
 - Full-size attachment gallery in the composer, History, and shared answers, with zoom,
   original-image download, keyboard navigation, and mobile swipe.
-- Optional prompt context (date, location, personal data) toggled in Settings and stored in the
+- Optional prompt context (date, location, personal data) configured exclusively in Settings and stored in the
   browser. It's stored in its own database column, never glued into the prompt, so History shows
   the question you actually asked and the personal bits stay separable.
 - Live cost estimate (input only - text + attached images) from the prompt before sending.

@@ -59,8 +59,8 @@ rejected. History is never silently truncated. The API limits user messages to
 100,000 characters, follow-up histories to 500,000 stored characters and 100
 messages; provider context limits may be lower.
 
-Titles remain unset at this stage. Navigation uses the first question as a
-preview; automatic title generation is a separate change.
+Titles are generated asynchronously after the first successful answer. Until a
+title is available, navigation uses a first-question preview.
 
 ## Local verification
 
@@ -125,8 +125,43 @@ When browser storage is unavailable or full, views continue to work in memory
 and display a persistence warning. The user can continue sending messages;
 unsent changes may not survive refresh in that state.
 
-Navigation currently uses adjacent first-question previews and simple arrows.
-Generated titles, touch gestures and animated transitions are separate changes.
+Navigation shows an arrow and the adjacent conversation's title, without a
+central heading or tab strip. At narrow widths, adjacent links move above the
+conversation. Horizontal touch swipes and trackpad gestures navigate one view
+per gesture. Vertical scrolling, pinch zoom, text selection, editors, links,
+buttons, code blocks and open dialogs keep their own interactions. View changes
+use directional slide transitions; reduced-motion preferences disable them.
+The interface is displayed at 120% of its earlier scale.
+
+The main composer does not contain context controls. Date/time, location and
+personal context are configured in Settings and are captured when a conversation
+starts. The selected model's diagnostic information is also shown in Settings.
+
+## Automatic titles
+
+The answer is committed before title generation. A separate durable title state
+on `conversations` (`waiting`, `queued`, `running`, `completed`, `failed`) lets a
+worker generate a title without delaying answer delivery. Browser polling
+continues while the title is pending. Normal answer jobs take priority over title
+jobs.
+
+The title request contains at most 2,000 characters of the first question and
+2,000 characters of its answer. It excludes Settings context and attachments.
+It requests a short title in the question's language. Cloud titles use a small
+model from the first answer's provider: Haiku 4.5, Gemini 3.1 Flash Lite, or GPT-5.4
+Nano. Local conversations use their local model. The title is stored once and
+is not regenerated on follow-ups.
+
+Title generation is an additional model request. Its served model, input/output
+tokens and cost are stored separately in `title_model`, `title_input_tokens`,
+`title_output_tokens` and `title_cost_usd`. Per-answer costs exclude that metadata
+request. If it fails or returns an unsuitable title, navigation keeps the question
+preview. Interrupted title requests become failed, without automatic paid retries.
+Deleting a conversation during title generation discards the title result.
+
+The migration adds title state and usage columns to `conversations`. Existing
+conversations are not batch-processed for titles; a later successful follow-up
+can queue a missing title. Legacy standalone history remains unchanged.
 
 Individual assistant answers retain public sharing. A link exposes only that
 answer and, optionally, its immediate user question and images. Earlier turns,
@@ -145,6 +180,7 @@ responses without model calls:
 python3 backend/tests/check_conversation_ui.py
 python3 backend/tests/check_session_storage.py
 python3 backend/tests/check_conversation_sessions.py
+python3 backend/tests/check_conversation_navigation.py
 ```
 
 The existing `/api/generate` endpoint remains available for older clients.
