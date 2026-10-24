@@ -30,7 +30,7 @@ def check_api():
         answer_started, answer_release = threading.Event(), threading.Event()
         block = False
 
-        def fake(model, prompt, depth, images=None, messages=None):
+        def fake(model, prompt, depth, images=None, messages=None, **kwargs):
             calls.append((model, messages))
             if block:
                 answer_started.set()
@@ -104,6 +104,15 @@ def check_api():
         assert worker.run_one(api)
         assert [m['role'] for m in calls[-1][1]] == ['user', 'assistant', 'user']
         assert calls[-1][1][0]['content'][0]['type'] == 'image'
+        from conversation_titles import run_title
+        assert run_title(api)
+        titled = client().get('/api/conversations/' + cid).json
+        assert titled['title'] == 'B'
+        assert titled['title_status'] == 'completed'
+        assert titled['title_model'] == 'gemini-3.1-flash-lite'
+        assert titled['title_input_tokens'] == 10
+        assert titled['title_cost_usd'] > 0
+        assert not run_title(api)
         state = client().get('/api/conversations/' + cid).json
         assert len(state['messages']) == 4
         follow_mid = state['messages'][2]['id']

@@ -68,3 +68,13 @@ CONVERSATION_MIGRATIONS += (
     '''CREATE UNIQUE INDEX IF NOT EXISTS conversation_messages_share_idx
        ON conversation_messages(share_token) WHERE share_token IS NOT NULL''',
 )
+
+
+CONVERSATION_MIGRATIONS += (
+    "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS title_status TEXT NOT NULL DEFAULT 'waiting' CHECK (title_status IN ('waiting', 'queued', 'running', 'completed', 'failed'))",
+    'ALTER TABLE conversations ADD COLUMN IF NOT EXISTS title_model TEXT',
+    'ALTER TABLE conversations ADD COLUMN IF NOT EXISTS title_input_tokens INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE conversations ADD COLUMN IF NOT EXISTS title_output_tokens INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE conversations ADD COLUMN IF NOT EXISTS title_cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0',
+    "CREATE INDEX IF NOT EXISTS conversations_title_queue_idx ON conversations(created_at) WHERE title_status = 'queued'",
+)
