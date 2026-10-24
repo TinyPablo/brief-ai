@@ -2,15 +2,19 @@
 
 Brief AI delivers quick, clear answers with fast models and a simple interface.
 
-One prompt in, one answer out - no chat threads. Every prompt and answer is
-stored with its model, timing, token usage, and price, so you can browse the full
-history later. The whole thing sits behind Google Authenticator (TOTP) login with a
+Start with a quick question and continue with follow-up messages. Conversations
+save automatically, with a model, timestamp, token usage and price recorded for
+each answer. Switch providers within a conversation while retaining its previous
+messages and images. Earlier standalone answers remain available in History. The whole thing sits behind Google Authenticator (TOTP) login with a
 persistent session, so you log in once and stay in across tabs.
 
 > Bootstrapped with Claude Opus 4.8.
 
 ## Features
 
+- Automatically saved conversations with follow-ups, per-message timestamps and model switching.
+- Background generation survives a browser refresh; interrupted worker jobs can be retried explicitly.
+- Delete a user message and all later replies, or delete the first message to remove the conversation.
 - Command Deck interface with matching Settings panels and a Shared tab for active public links.
 - Swipe left on a History entry to reveal Delete, then explicitly confirm removal.
 - Google Authenticator (TOTP) login with a persistent session cookie.
@@ -41,8 +45,11 @@ persistent session, so you log in once and stay in across tabs.
 
 - **Frontend** - React + Tailwind (vendored locally, no build step), served by nginx.
 - **Backend** - Python / Flask + gunicorn, with cloud providers and optional local inference.
+- **Generation worker** - durable Postgres queue, independent of HTTP requests.
 - **Database** - PostgreSQL.
 - **Orchestration** - Docker Compose.
+
+See [conversation storage, API and verification](docs/conversations.md) for details.
 
 ## Optional local AI
 
@@ -65,6 +72,7 @@ Then edit `.env`:
 | `TOTP_SECRET`       | Secret for Google Authenticator login (see below).              |
 | `SECRET_KEY`        | Long random string for signing session cookies.                |
 | `COOKIE_SECURE`     | `true` in production (https); `false` only for local http tests.|
+| `CONVERSATION_WORKERS` | Concurrent background generations, 1-8; default 4. |
 | `POSTGRES_*`        | Database name, user, and password.                             |
 
 Generate a secret key with:

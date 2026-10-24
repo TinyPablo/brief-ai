@@ -21,7 +21,7 @@ function zl(value) {
 function fmtTime(iso) {
   try {
     return new Date(iso).toLocaleString([], {
-      month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+      month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit',
     });
   } catch (e) {
     return iso;
@@ -161,7 +161,7 @@ function Login({ onSuccess }) {
     try {
       const res = await api('/login', { method: 'POST', body: JSON.stringify({ code }) });
       if (res.ok) { onSuccess(); return; }
-      const data = await res.json().catch(() => ({}));
+      const data = await res.json();
       if (res.status === 429) {
         setCooldown(data.retry_after || 3);
         setError('Too many attempts - wait a moment.');
@@ -270,7 +270,7 @@ function Modal({ title, onClose, children }) {
   );
 }
 
-function ShareDialog({ itemId, onClose, onChanged, onUnauth }) {
+function ShareDialog({ itemId, onClose, onChanged, onUnauth, basePath = '/history/' }) {
   const [loaded, setLoaded] = useState(false);
   const [allowed, setAllowed] = useState(false);
   const [token, setToken] = useState(null);
@@ -282,7 +282,7 @@ function ShareDialog({ itemId, onClose, onChanged, onUnauth }) {
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     let active = true;
-    api('/history/' + itemId).then(async (res) => {
+    api(basePath + itemId).then(async (res) => {
       if (res.status === 401) { onUnauth(); onClose(); return; }
       if (!res.ok) throw new Error('Could not load sharing settings.');
       const item = await res.json();
@@ -295,11 +295,11 @@ function ShareDialog({ itemId, onClose, onChanged, onUnauth }) {
       setLoaded(true);
     }).catch((e) => { if (active) setError(e.message); });
     return () => { active = false; };
-  }, [itemId]);
+  }, [itemId, basePath]);
   const save = async (revoke = false) => {
     setBusy(true); setError(''); setCopied(false);
     try {
-      const res = await api('/history/' + itemId + '/share', {
+      const res = await api(basePath + itemId + '/share', {
         method: revoke ? 'DELETE' : token ? 'PATCH' : 'POST',
         ...(!revoke ? { body: JSON.stringify({ show_prompt: showPrompt, show_images: showImages }) } : {}),
       });
@@ -728,35 +728,128 @@ const DEFAULT_IMAGE_LIMITS = {
   allowed_types: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
 };
 
-function AskView({ models, model, setModel, rate, imageLimits, settings, onUnauth }) {
+function TrashIcon() {
+  return <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" /></svg>;
+}
+
+function AskView({ models, model, setModel, rate, imageLimits, settings, onUnauth, conversationId, onConversationChange }) {
   const limits = imageLimits || DEFAULT_IMAGE_LIMITS;
   const groups = useMemo(() => groupByProvider(models), [models]);
   const currentModel = models.find((m) => m.id === model) || null;
   const [prompt, setPrompt] = useState('');
   const [images, setImages] = useState([]);
   const [imageError, setImageError] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [shareMessage, setShareMessage] = useState(null);
+  const [conversation, setConversation] = useState(null);
+  const [restoring, setRestoring] = useState(!!conversationId);
   const [error, setError] = useState('');
-  const [elapsed, setElapsed] = useState(0);
-  const [copied, setCopied] = useState(false);
-  const [sharing, setSharing] = useState(false);
+  const [refresh, setRefresh] = useState(0);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteMessage, setDeleteMessage] = useState(null);
+  const [copied, setCopied] = useState(null);
   const fileInputRef = useRef(null);
+  const requestRef = useRef(null);
+  const unauthRef = useRef(onUnauth);
+  unauthRef.current = onUnauth;
+  const busy = ['queued', 'running'].includes(conversation?.job?.status);
+  const loading = submitting || busy;
+  const unanswered = conversation?.messages?.at(-1)?.role === 'user';
 
   useEffect(() => {
-    if (!loading) return;
-    const start = Date.now();
-    setElapsed(0);
-    const t = setInterval(() => setElapsed(Date.now() - start), 100);
-    return () => clearInterval(t);
-  }, [loading]);
+    let cancelled = false;
+    let timer;
+    setConversation(null);
+    setRestoring(!!conversationId);
+    setPrompt(''); setImages([]); setImageError('');
+    requestRef.current = null;
+    setError('');
+    let firstPoll = true;
+    const poll = async () => {
+      try {
+        const res = await api('/conversations/' + conversationId);
+        if (cancelled) return;
+        if (res.status === 401) { unauthRef.current(); return; }
+        if (res.status === 404) { onConversationChange(null); return; }
+        if (!res.ok) throw new Error('Could not load this conversation.');
+        const data = await res.json();
+        if (cancelled) return;
+        setConversation(data);
+        if (firstPoll) {
+          const lastModel = data.messages.filter((m) => m.role === 'user').at(-1)?.model;
+          if (models.some((m) => m.id === lastModel)) setModel(lastModel);
+          firstPoll = false;
+        }
+        setRestoring(false);
+        setError('');
+        if (['queued', 'running'].includes(data.job?.status)) timer = setTimeout(poll, 1200);
+      } catch (e) {
+        if (!cancelled) { setError('Connection lost. Reconnecting…'); timer = setTimeout(poll, 3000); }
+      }
+    };
+    if (conversationId) poll();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [conversationId, refresh, onConversationChange]);
+
+  useEffect(() => {
+    if (conversationId) return;
+    let pending;
+    try { pending = sessionStorage.getItem('briefai_pending_request'); } catch {}
+    if (!pending) return;
+    let cancelled = false;
+    setRestoring(true);
+    api('/conversation-requests/' + pending).then(async (res) => {
+      if (cancelled) return;
+      if (res.status === 401) { unauthRef.current(); return; }
+      if (res.ok) {
+        const data = await res.json();
+        if (!cancelled) { onConversationChange(data.id); sessionStorage.removeItem('briefai_pending_request'); }
+      } else if (res.status !== 404) throw new Error('Could not recover the last request.');
+    }).catch(() => { if (!cancelled) setError('Could not recover the last request. Refresh to try again.'); })
+      .finally(() => { if (!cancelled) setRestoring(false); });
+    return () => { cancelled = true; };
+  }, [conversationId, onConversationChange]);
+
+  const newConversation = () => {
+    if (submitting) return;
+    requestRef.current = null;
+    try { sessionStorage.removeItem('briefai_pending_request'); } catch {}
+    setPrompt(''); setImages([]); setImageError(''); setError(''); setConversation(null);
+    onConversationChange(null);
+  };
+
+  const retry = async () => {
+    setSubmitting(true); setError('');
+    try {
+      const res = await api('/conversations/' + conversationId + '/retry', { method: 'POST' });
+      if (res.status === 401) { unauthRef.current(); return; }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || data.error || 'Could not retry.');
+      setRefresh((x) => x + 1);
+    } catch (e) { setError(e.message); }
+    finally { setSubmitting(false); }
+  };
+
+  const truncate = async () => {
+    setDeleting(true); setError('');
+    try {
+      const res = await api('/conversations/' + conversationId + '/messages/' + deleteMessage, { method: 'DELETE' });
+      if (res.status === 401) { unauthRef.current(); return; }
+      const data = await res.json();
+      if (!res.ok) throw new Error('Could not delete the message.');
+      setDeleteMessage(null);
+      if (data.deleted_conversation) newConversation();
+      else setRefresh((x) => x + 1);
+    } catch (e) { setError(e.message); }
+    finally { setDeleting(false); }
+  };
 
   const totalImageBytes = useMemo(() => images.reduce((s, im) => s + im.sizeBytes, 0), [images]);
   const imagesTokenTotal = useMemo(
     () => images.reduce((s, im) => s + imageTokenEstimate(im.width, im.height), 0),
     [images],
   );
-  const unsupportedImages = currentModel?.supports_images === false && images.length > 0;
+  const unsupportedImages = currentModel?.supports_images === false && (images.length > 0 || conversation?.messages?.some((m) => m.images?.length));
   const overLimit = images.length > limits.max_images || totalImageBytes > limits.max_total_mb * 1e6;
 
   const addFiles = async (fileList) => {
@@ -812,59 +905,54 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
 
   const estimate = useMemo(() => {
     if (!currentModel) return null;
-    const chars = estimateChars(prompt, settings, true);
+    const historyChars = (conversation?.messages || []).reduce((total, m) => total + m.content.length, 0);
+    const chars = historyChars + (conversation ? (conversation.context || '').length + prompt.length + 12 : estimateChars(prompt, settings, true));
     if (!prompt.trim() && images.length === 0) return null;
-    const inTok = Math.ceil(chars / 4) + imagesTokenTotal;
+    const historyImages = (conversation?.messages || []).flatMap((m) => m.images || []).reduce((total, im) => total + imageTokenEstimate(im.width, im.height), 0);
+    const inTok = Math.ceil(chars / 4) + imagesTokenTotal + historyImages;
     return (inTok / 1e6 * currentModel.input) * rate;
-  }, [prompt, currentModel, settings, imagesTokenTotal, rate, images.length]);
+  }, [prompt, currentModel, settings, imagesTokenTotal, rate, images.length, conversation]);
 
   const send = async () => {
-    if (!prompt.trim() || loading || overLimit || unsupportedImages) return;
-    const context = buildContext(settings);
-    setLoading(true);
-    setResult(null);
-    setError('');
-    setCopied(false);
+    if (!prompt.trim() || loading || restoring || unanswered || overLimit || unsupportedImages) return;
+    setSubmitting(true); setError('');
+    const body = {
+      model, prompt: prompt.trim(), brief: true,
+      ...(!conversationId ? { context: buildContext(settings) } : {}),
+      images: images.map((im) => ({
+        data: im.base64, media_type: im.mediaType, width: im.width, height: im.height,
+        ...(im.thumb ? { thumb: im.thumb.base64, thumb_media_type: im.thumb.mediaType } : {}),
+      })),
+    };
+    // Preserve the submission ID across network retries; resolve it before allowing an edited retry.
+    if (!requestRef.current) requestRef.current = { id: crypto.randomUUID(), body };
+    const submission = requestRef.current;
+    try { sessionStorage.setItem('briefai_pending_request', submission.id); } catch {}
     try {
-      const res = await api('/generate', {
-        method: 'POST',
-        body: JSON.stringify({
-          model,
-          prompt: prompt.trim(),
-          ...(context ? { context } : {}),
-          brief: true,
-          ...(images.length ? {
-            images: images.map((im) => ({
-              data: im.base64,
-              media_type: im.mediaType,
-              width: im.width,
-              height: im.height,
-              ...(im.thumb ? { thumb: im.thumb.base64, thumb_media_type: im.thumb.mediaType } : {}),
-            })),
-          } : {}),
-        }),
+      const res = await api(conversationId ? '/conversations/' + conversationId + '/messages' : '/conversations', {
+        method: 'POST', body: JSON.stringify({ ...submission.body, request_id: submission.id }),
       });
       if (res.status === 401) { onUnauth(); return; }
-      const data = await res.json().catch(() => ({}));
+      const data = await res.json();
       if (!res.ok) {
-        setError(data.detail || data.error || 'Request failed.');
-      } else {
-        setResult(data);
+        requestRef.current = null;
+        try { sessionStorage.removeItem('briefai_pending_request'); } catch {}
+        throw new Error(data.detail || data.error || 'Request failed.');
       }
-    } catch (e) {
-      setError('Network error.');
-    } finally {
-      setLoading(false);
-    }
+      onConversationChange(data.id);
+      setRefresh((x) => x + 1);
+      setPrompt(''); setImages([]); setImageError('');
+      requestRef.current = null;
+      try { sessionStorage.removeItem('briefai_pending_request'); } catch {}
+    } catch (e) { setError(e.message || 'Network error. Retry to check the same submission.'); }
+    finally { setSubmitting(false); }
   };
 
   const clearAll = () => {
     setPrompt('');
     setImages([]);
     setImageError('');
-    setResult(null);
     setError('');
-    setCopied(false);
   };
 
   const onKeyDown = (e) => {
@@ -874,18 +962,31 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
     }
   };
 
-  const copy = () => {
-    if (!result) return;
-    navigator.clipboard.writeText(result.answer).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
-  };
-
-  const sendDisabled = loading || !prompt.trim() || overLimit || unsupportedImages;
+  const sendDisabled = loading || restoring || unanswered || !prompt.trim() || overLimit || unsupportedImages;
 
   return (
     <div className="space-y-4">
+      {shareMessage && <ShareDialog itemId={shareMessage} basePath="/conversation-messages/" onClose={() => setShareMessage(null)} onUnauth={onUnauth} />}
+      {conversationId && <div className="flex justify-end"><button type="button" className="font-mono text-xs text-muted hover:text-accent" onClick={newConversation} disabled={submitting}>+ New conversation</button></div>}
+      {restoring && <p className="text-sm text-muted" role="status">Loading conversation…</p>}
+      {conversation?.messages.map((message) => (
+        <div key={message.id} className={'corner-panel border border-edge ' + (message.role === 'user' ? 'bg-panel2' : 'bg-panel')}>
+          <div className="flex items-center gap-3 px-4 py-2 border-b border-edge font-mono text-[11px] text-muted">
+            <span>{message.role === 'user' ? 'You' : models.find((m) => m.id === message.model)?.label || message.model}</span>
+            <time dateTime={message.created_at}>{fmtTime(message.created_at)}</time>
+            {message.role === 'user'
+              ? <button type="button" className="ml-auto hover:text-bad p-1" aria-label="Delete message and later replies" title="Delete message and later replies" disabled={deleting} onClick={() => setDeleteMessage(message.id)}><TrashIcon /></button>
+              : <button type="button" className="ml-auto hover:text-white" onClick={async () => { try { await navigator.clipboard.writeText(message.content); setCopied(message.id); setTimeout(() => setCopied(null), 1500); } catch { setError('Clipboard is unavailable. Select the answer to copy it.'); } }}>{copied === message.id ? 'copied' : 'copy'}</button>}
+            {message.role === 'assistant' && <button type="button" onClick={() => setShareMessage(message.id)} className="hover:text-accent2">Share</button>}
+          </div>
+          <div className="p-5">
+            {message.role === 'user' ? <div className="whitespace-pre-wrap break-words">{message.content}</div> : <><Meta result={{ ...message, model_label: models.find((m) => m.id === message.model)?.label || message.model }} rate={rate} /><Markdown text={message.content} /></>}
+            {!!message.images?.length && <div className="mt-3"><AttachmentStrip images={message.images} size={64} /></div>}
+          </div>
+        </div>
+      ))}
+      {conversation?.job?.status === 'failed' && <div role="alert" className="border border-bad/40 p-4 text-sm"><p>{conversation.job.error_detail}</p><button type="button" className="deck-button mt-3" onClick={retry} disabled={submitting}>Retry answer</button></div>}
+      {deleteMessage && <Modal title="Delete from this message?" onClose={() => { if (!deleting) setDeleteMessage(null); }}><p className="text-sm text-muted">This message and all later replies will be deleted.</p><div className="flex gap-3 mt-6"><button type="button" className="deck-button" disabled={deleting} onClick={() => setDeleteMessage(null)}>Keep messages</button><button type="button" className="deck-button danger" disabled={deleting} onClick={truncate}>{deleting ? 'Deleting…' : 'Delete'}</button></div></Modal>}
       <div
         className="corner-panel border border-edge bg-panel focus-within:border-accent/60 transition-colors"
         onDrop={onDrop}
@@ -900,7 +1001,7 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
           onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={onKeyDown}
           onPaste={onTextareaPaste}
-          placeholder="Ask anything…"
+          placeholder={conversationId ? "Follow up…" : "Ask anything…"}
           rows={3}
           className="w-full bg-transparent resize-y outline-none px-4 pt-3 pb-1 text-[0.95rem] placeholder:text-muted/70 min-h-[4.5rem]"
         />
@@ -958,19 +1059,11 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
             )}
             <button
               onClick={clearAll}
-              disabled={loading || (!prompt && !result && !error && images.length === 0)}
+              disabled={!prompt && !error && images.length === 0}
               title="Clear"
               className="text-muted hover:text-white disabled:opacity-40 p-1 transition-colors"
             >
-              <svg
-                className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-              >
-                <polyline points="3 6 5 6 21 6" />
-                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
-                <path d="M10 11v6M14 11v6" />
-                <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
-              </svg>
+              <TrashIcon />
             </button>
 
             <button
@@ -980,12 +1073,14 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
               className="flex items-center gap-2 bg-accent hover:bg-accent2 disabled:opacity-40 disabled:hover:bg-accent text-accentInk text-[11px] font-bold px-4 py-1.5 transition-colors"
             >
               {loading ? <span className="spinner" /> : null}
-              {loading ? 'thinking…' : 'brief'}
+              {loading ? 'thinking…' : conversationId ? 'send' : 'brief'}
             </button>
           </div>
         </div>
       </div>
 
+      {conversationId && <p className="font-mono text-[10px] text-muted">Saved automatically</p>}
+      {unsupportedImages && <p role="alert" className="text-sm text-bad">This conversation contains images. Select a model that supports images.</p>}
       {currentModel?.provider === "local" && (
         <p className="font-mono text-xs text-muted" role="status">
           Local AI · 8,192-token context · up to 1,024 output tokens · text only · may take up to 4 minutes.
@@ -1002,7 +1097,7 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
       {loading && (
         <div className="text-sm text-muted flex items-center gap-2 px-1">
           <span className="spinner" />
-          <span>Generating… {(elapsed / 1000).toFixed(1)}s</span>
+          <span>{conversation?.job?.status === 'queued' ? 'Queued…' : 'Generating…'}</span>
         </div>
       )}
 
@@ -1012,19 +1107,7 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
         </div>
       )}
 
-      {sharing && result && <ShareDialog itemId={result.id} onClose={() => setSharing(false)} onUnauth={onUnauth} />}
-      {result && (
-        <div className="corner-panel border border-edge bg-panel fade-in">
-          <div className="flex items-center justify-between px-4 py-2 border-b border-edge">
-            <span className="font-mono text-[10px] tracking-widest text-muted/80 uppercase">response</span>
-            <button type="button" className="deck-button" onClick={() => setSharing(true)}>Share answer</button>
-          </div>
-          <div className="p-5">
-            <Meta result={result} rate={rate} onCopy={copy} copied={copied} />
-            <Markdown text={result.answer} />
-          </div>
-        </div>
-      )}
+
     </div>
   );
 }
@@ -1080,6 +1163,78 @@ function groupHistory(items) {
     day.items.push(it);
   });
   return weeks;
+}
+
+function ConversationSharedAnswers({ onUnauth, onOpen }) {
+  const [items, setItems] = useState([]);
+  const [sharing, setSharing] = useState(null);
+  const [more, setMore] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const load = async (before) => {
+    setBusy(true); setError('');
+    try {
+      const res = await api('/conversation-shares' + (before ? '?before=' + before : ''));
+      if (res.status === 401) { onUnauth(); return; }
+      if (!res.ok) throw new Error('Could not load shared conversation answers.');
+      const data = await res.json();
+      setItems((prev) => before ? [...prev, ...data.items] : data.items);
+      setMore(data.items.length === 30);
+    } catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  };
+  useEffect(() => { load(); }, []);
+  return <section className="mb-6 space-y-3">
+    {!!items.length && <h2 className="font-mono text-xs uppercase tracking-widest text-accent2">Shared conversation answers</h2>}
+    {items.map((item) => <div className="border-b border-edge py-3 flex gap-3 items-center" key={item.id}><button className="text-left flex-1 text-sm" onClick={() => onOpen(item.conversation_id)}>{item.prompt_preview}</button><a className="text-xs text-accent2" href={'/s/' + item.share_token} target="_blank" rel="noopener noreferrer">Open ↗</a><button className="text-xs text-muted" onClick={() => setSharing(item.id)}>Manage sharing</button></div>)}
+    {error && <p role="alert" className="text-sm text-bad">{error} <button className="underline" onClick={() => load()}>Retry</button></p>}
+    {more && <button className="deck-button" disabled={busy} onClick={() => load(items.at(-1)?.id)}>Load more</button>}
+    {sharing && <ShareDialog itemId={sharing} basePath="/conversation-messages/" onUnauth={onUnauth} onClose={() => setSharing(null)} onChanged={() => load()} />}
+  </section>;
+}
+
+function ConversationHistory({ onOpen, onUnauth }) {
+  const [items, setItems] = useState([]);
+  const [query, setQuery] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [hasMore, setHasMore] = useState(false);
+  const unauthRef = useRef(onUnauth);
+  unauthRef.current = onUnauth;
+  const generation = useRef(0);
+  const load = async (before, version = generation.current) => {
+    setLoading(true); setError('');
+    const params = new URLSearchParams({ q: query });
+    if (before) params.set('before', before);
+    try {
+      const res = await api('/conversations?' + params);
+      if (res.status === 401) { unauthRef.current(); return; }
+      if (!res.ok) throw new Error('Could not load conversations.');
+      const data = await res.json();
+      if (version !== generation.current) return;
+      setItems((prev) => before ? [...prev, ...data.items] : data.items);
+      setHasMore(data.items.length === 30);
+    } catch (e) { if (version === generation.current) setError(e.message); }
+    finally { if (version === generation.current) setLoading(false); }
+  };
+  useEffect(() => {
+    const version = ++generation.current;
+    const timer = setTimeout(() => load(null, version), 200);
+    return () => { clearTimeout(timer); generation.current++; };
+  }, [query]);
+  return <section className="mb-8 space-y-3">
+    <h1 className="font-mono text-xs uppercase tracking-widest text-accent2">Conversations</h1>
+    <input aria-label="Search conversations" className="deck-input w-full" placeholder="Search conversations" value={query} onChange={(e) => setQuery(e.target.value)} />
+    {items.map((item) => <button type="button" key={item.id} onClick={() => onOpen(item.id)} className="block w-full text-left border-b border-edge py-3 hover:text-accent2">
+      <span className="block text-sm break-words">{item.title || item.prompt_preview}</span>
+      <span className="block font-mono text-[11px] text-muted mt-1">{fmtTime(item.created_at)} · {item.message_count} messages{['queued', 'running'].includes(item.status) ? ' · generating…' : item.status === 'failed' ? ' · failed' : ''}</span>
+    </button>)}
+    {!loading && !items.length && <p className="text-sm text-muted">{query ? 'No matching conversations.' : 'No conversations yet.'}</p>}
+    {error && <p role="alert" className="text-sm text-bad">{error} <button className="underline" onClick={() => load(null)}>Retry</button></p>}
+    {loading && <p role="status" className="text-sm text-muted">Loading…</p>}
+    {hasMore && <button type="button" className="deck-button" disabled={loading} onClick={() => load(items.at(-1)?.id)}>Load more</button>}
+    <h2 className="font-mono text-xs uppercase tracking-widest text-muted pt-5">Earlier answers</h2>
+  </section>;
 }
 
 function HistoryView({ rate, onUnauth, sharedOnly = false }) {
@@ -1447,6 +1602,15 @@ function SessionSidebar({ model }) {
 
 function Main({ onLogout }) {
   const [tab, setTab] = useState('ask');
+  const [conversationId, setConversationId] = useState(() => {
+    try { return sessionStorage.getItem('briefai_active_conversation') || null; } catch { return null; }
+  });
+  const changeConversation = useCallback((id) => {
+    setConversationId(id);
+    try { if (id) sessionStorage.setItem('briefai_active_conversation', id); else sessionStorage.removeItem('briefai_active_conversation'); } catch {}
+  }, []);
+  const openConversation = (id) => { changeConversation(id); setTab('ask'); };
+
   const [navOpen, setNavOpen] = useState(false);
   const [models, setModels] = useState([]);
   const [model, setModel] = useState('');
@@ -1535,7 +1699,7 @@ function Main({ onLogout }) {
         {models.length > 0 && (
           <div className={tab === 'ask' ? 'flex gap-8 items-start' : 'hidden'}>
             <div className="flex-1 min-w-0 max-w-2xl">
-              <ContextControls settings={settings} setSettings={setSettings} onEdit={() => setTab('settings')} />
+              {!conversationId && <ContextControls settings={settings} setSettings={setSettings} onEdit={() => setTab('settings')} />}
               <AskView
                 models={models}
                 model={model}
@@ -1544,13 +1708,15 @@ function Main({ onLogout }) {
                 imageLimits={imageLimits}
                 settings={settings}
                 onUnauth={unauth}
+                conversationId={conversationId}
+                onConversationChange={changeConversation}
               />
             </div>
             <SessionSidebar model={currentModel} />
           </div>
         )}
-        {tab === 'history' && <HistoryView key="history" rate={rate} onUnauth={unauth} />}
-        {tab === 'shared' && <HistoryView key="shared" rate={rate} onUnauth={unauth} sharedOnly />}
+        {tab === 'history' && <><ConversationHistory onOpen={openConversation} onUnauth={unauth} /><HistoryView key="history" rate={rate} onUnauth={unauth} /></>}
+        {tab === 'shared' && <><ConversationSharedAnswers onUnauth={unauth} onOpen={openConversation} /><HistoryView key="shared" rate={rate} onUnauth={unauth} sharedOnly /></>}
         {tab === 'settings' && <SettingsView settings={settings} setSettings={setSettings} onBack={() => setTab('ask')} />}
       </main>
     </div>

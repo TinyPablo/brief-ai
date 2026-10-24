@@ -6,6 +6,7 @@ from pathlib import Path
 import os
 import re
 import secrets
+import sys
 import threading
 import time
 import traceback
@@ -276,14 +277,20 @@ def init_db():
         raise RuntimeError("Could not connect to the database")
     try:
         with conn, conn.cursor() as cur:
+            # Web and queue workers may start together against the same database.
+            cur.execute("SELECT pg_advisory_xact_lock(476, 0)")
             cur.execute(CREATE_SQL)
             cur.execute(IMAGES_SQL)
             cur.execute(PROMPT_IMAGES_SQL)
             cur.execute(PROMPT_IMAGES_INDEX_SQL)
             for statement in MIGRATIONS:
                 cur.execute(statement)
+            from conversation_schema import CONVERSATION_MIGRATIONS
+            for statement in CONVERSATION_MIGRATIONS:
+                cur.execute(statement)
     except psycopg2.Error as exc:
         print("init_db:", exc)
+        raise
     finally:
         conn.close()
 
@@ -450,7 +457,7 @@ def validate_images(images):
     return None, decoded
 
 
-def store_images(cur, prompt_id, images):
+def store_images(cur, prompt_id, images, *, conversation=False):
     """Persist the attachments of one prompt.
 
     Content addressing makes the image insert idempotent: ON CONFLICT DO
@@ -471,10 +478,16 @@ def store_images(cur, prompt_id, images):
              psycopg2.Binary(img["thumb"]) if img["thumb"] else None,
              img["thumb_media_type"]),
         )
-        cur.execute(
-            "INSERT INTO prompt_images (prompt_id, image_sha, position) VALUES (%s, %s, %s)",
-            (prompt_id, img["sha256"], position),
-        )
+        if conversation:
+            cur.execute(
+                "INSERT INTO conversation_message_images (message_id, image_sha, position) "
+                "VALUES (%s, %s, %s)", (prompt_id, img["sha256"], position),
+            )
+        else:
+            cur.execute(
+                "INSERT INTO prompt_images (prompt_id, image_sha, position) VALUES (%s, %s, %s)",
+                (prompt_id, img["sha256"], position),
+            )
 
 
 def delete_orphan_images(cur, shas):
@@ -492,6 +505,9 @@ def delete_orphan_images(cur, shas):
            WHERE sha256 = ANY(%s)
              AND NOT EXISTS (
                  SELECT 1 FROM prompt_images WHERE image_sha = images.sha256
+             )
+             AND NOT EXISTS (
+                 SELECT 1 FROM conversation_message_images WHERE image_sha = images.sha256
              )""",
         (list(shas),),
     )
@@ -538,7 +554,7 @@ def require_auth(view):
     return wrapper
 
 
-def call_anthropic(model, prompt, depth, images=None):
+def call_anthropic(model, prompt, depth, images=None, messages=None):
     if anthropic_client is None:
         raise RuntimeError("ANTHROPIC_API_KEY is not configured")
     cfg = MODELS[model]
@@ -553,7 +569,7 @@ def call_anthropic(model, prompt, depth, images=None):
         model=model,
         max_tokens=MAX_TOKENS,
         system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": content}],
+        messages=messages if messages is not None else [{"role": "user", "content": content}],
     )
     reasoning = cfg.get("reasoning", {}).get(depth)
     if reasoning:
@@ -594,7 +610,7 @@ def call_anthropic(model, prompt, depth, images=None):
 
 
 
-def call_gemini(model, prompt, depth, images=None):
+def call_gemini(model, prompt, depth, images=None, messages=None):
     if gemini_client is None:
         raise RuntimeError("GEMINI_API_KEY is not configured")
 
@@ -614,7 +630,7 @@ def call_gemini(model, prompt, depth, images=None):
 
     resp = gemini_client.models.generate_content(
         model=model,
-        contents=contents,
+        contents=messages if messages is not None else contents,
         config=genai_types.GenerateContentConfig(**config_args),
     )
 
@@ -645,7 +661,7 @@ def call_gemini(model, prompt, depth, images=None):
     }
 
 
-def call_openai(model, prompt, depth, images=None):
+def call_openai(model, prompt, depth, images=None, messages=None):
     if openai_client is None:
         raise RuntimeError("OPENAI_API_KEY is not configured")
 
@@ -658,10 +674,9 @@ def call_openai(model, prompt, depth, images=None):
     kwargs = dict(
         model=model,
         max_completion_tokens=MAX_TOKENS,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
+        messages=[{"role": "system", "content": SYSTEM_PROMPT}] + (
+            messages if messages is not None else [{"role": "user", "content": user_content}]
+        ),
     )
     reasoning = MODELS[model].get("reasoning", {}).get(depth)
     if reasoning:
@@ -1021,6 +1036,9 @@ def public_share(token):
                   if row and row["share_show_images"] else [])
     conn.close()
     if not row:
+        if token.startswith("c_"):
+            from conversation_sharing import public_answer
+            return public_answer(sys.modules[__name__], token)
         return None
     return dict(
         created_at=row["created_at"].isoformat(),
@@ -1080,6 +1098,9 @@ def _serve_shared_image(token, sha, want_thumb):
         return jsonify(error="not_found"), 404
     prompt_id = _shared_prompt_id(token)
     if prompt_id is None:
+        from conversation_sharing import image_allowed
+        if token.startswith("c_") and image_allowed(sys.modules[__name__], token, sha):
+            return _serve_image(sha, want_thumb)
         return jsonify(error="not_found"), 404
     # A share token only unlocks the images actually attached to *that* prompt -
     # content-addressed shas are otherwise guessable, so this join is the only
@@ -1178,5 +1199,10 @@ def local_api():
     except local_inference.LocalError as exc:
         return jsonify(error={"message": exc.detail, "type": exc.code}), exc.status
 
+
+from conversations import register_routes
+from conversation_sharing import register_sharing
+register_routes(app, sys.modules[__name__])
+register_sharing(app, sys.modules[__name__])
 
 init_db()
