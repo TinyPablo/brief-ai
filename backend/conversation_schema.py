@@ -79,3 +79,46 @@ CONVERSATION_MIGRATIONS += (
     "CREATE INDEX IF NOT EXISTS conversations_title_queue_idx ON conversations(created_at) WHERE title_status = 'queued'",
     "CREATE INDEX IF NOT EXISTS conversations_title_running_idx ON conversations(id) WHERE title_status = 'running'",
 )
+
+CONVERSATION_MIGRATIONS += (
+    'ALTER TABLE conversations ADD COLUMN IF NOT EXISTS branch_request_id UUID',
+    'ALTER TABLE conversations ADD COLUMN IF NOT EXISTS branch_source_conversation_id UUID',
+    'ALTER TABLE conversations ADD COLUMN IF NOT EXISTS branch_source_message_id UUID',
+    'CREATE UNIQUE INDEX IF NOT EXISTS conversations_branch_request_idx ON conversations(branch_request_id) WHERE branch_request_id IS NOT NULL',
+    'ALTER TABLE conversation_messages ADD COLUMN IF NOT EXISTS inherited BOOLEAN NOT NULL DEFAULT FALSE',
+    '''CREATE TABLE IF NOT EXISTS conversation_share_snapshots (
+        message_id UUID PRIMARY KEY REFERENCES conversation_messages(id) ON DELETE CASCADE,
+        token TEXT NOT NULL UNIQUE,
+        scope TEXT NOT NULL CHECK (scope IN ('answer', 'exchange', 'conversation')),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        payload JSONB NOT NULL,
+        revoked BOOLEAN NOT NULL DEFAULT FALSE
+    )''',
+    'ALTER TABLE conversation_share_snapshots ADD COLUMN IF NOT EXISTS revoked BOOLEAN NOT NULL DEFAULT FALSE',
+    '''CREATE TABLE IF NOT EXISTS conversation_share_sources (
+        snapshot_id UUID NOT NULL REFERENCES conversation_share_snapshots(message_id) ON DELETE CASCADE,
+        message_id UUID NOT NULL REFERENCES conversation_messages(id) ON DELETE CASCADE,
+        PRIMARY KEY (snapshot_id, message_id)
+    )''',
+    'CREATE INDEX IF NOT EXISTS conversation_share_sources_message_idx ON conversation_share_sources(message_id)',
+    '''CREATE TABLE IF NOT EXISTS conversation_share_images (
+        snapshot_id UUID NOT NULL REFERENCES conversation_share_snapshots(message_id) ON DELETE CASCADE,
+        image_sha TEXT NOT NULL REFERENCES images(sha256) ON DELETE RESTRICT,
+        PRIMARY KEY (snapshot_id, image_sha)
+    )''',
+    'CREATE INDEX IF NOT EXISTS conversation_share_images_sha_idx ON conversation_share_images(image_sha)',
+    '''CREATE OR REPLACE FUNCTION revoke_conversation_snapshots() RETURNS trigger AS $$
+       BEGIN
+           UPDATE conversation_share_snapshots SET revoked = TRUE
+           WHERE message_id IN (SELECT snapshot_id FROM conversation_share_sources WHERE message_id = OLD.id);
+           DELETE FROM conversation_share_images
+           WHERE snapshot_id IN (SELECT snapshot_id FROM conversation_share_sources WHERE message_id = OLD.id);
+           DELETE FROM conversation_share_sources
+           WHERE snapshot_id IN (SELECT snapshot_id FROM conversation_share_sources WHERE message_id = OLD.id);
+           RETURN OLD;
+       END;
+       $$ LANGUAGE plpgsql''',
+    'DROP TRIGGER IF EXISTS revoke_conversation_snapshots ON conversation_messages',
+    '''CREATE TRIGGER revoke_conversation_snapshots BEFORE DELETE ON conversation_messages
+       FOR EACH ROW EXECUTE FUNCTION revoke_conversation_snapshots()''',
+)

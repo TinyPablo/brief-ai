@@ -81,13 +81,13 @@ def check_api():
         assert public.status_code == 200
         assert public.json['prompt'] == 'A'
         assert public.json['answer'] == 'B'
-        assert 'context' not in public.json and 'messages' not in public.json
-        assert public.json['images'] == []
+        assert 'context' not in public.json and len(public.json['messages']) == 2
+        assert len(public.json['images']) == 1
         assert len(client().get('/api/conversation-shares').json['items']) == 1
         mid = state['messages'][0]['id']
         assert state['messages'][0]['images']
         image_sha = state['messages'][0]['images'][0]['sha']
-        assert api.app.test_client().get('/api/share/' + token + '/images/' + image_sha).status_code == 404
+        assert api.app.test_client().get('/api/share/' + token + '/images/' + image_sha).status_code == 200
         assert client().patch('/api/conversation-messages/' + assistant_id + '/share', json={'show_images': True}).status_code == 200
         assert api.app.test_client().get('/api/share/' + token + '/images/' + image_sha).status_code == 200
         assert api.app.test_client().get('/api/share/' + token + '/images/' + '0' * 64).status_code == 404

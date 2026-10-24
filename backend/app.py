@@ -508,6 +508,9 @@ def delete_orphan_images(cur, shas):
              )
              AND NOT EXISTS (
                  SELECT 1 FROM conversation_message_images WHERE image_sha = images.sha256
+             )
+             AND NOT EXISTS (
+                 SELECT 1 FROM conversation_share_images WHERE image_sha = images.sha256
              )""",
         (list(shas),),
     )
@@ -1202,7 +1205,9 @@ def local_api():
 
 from conversations import register_routes
 from conversation_sharing import register_sharing
+from conversation_branches import register_branches
 register_routes(app, sys.modules[__name__])
 register_sharing(app, sys.modules[__name__])
+register_branches(app, sys.modules[__name__])
 
 init_db()
