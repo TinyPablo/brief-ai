@@ -6,6 +6,7 @@ from pathlib import Path
 import os
 import re
 import secrets
+import sys
 import threading
 import time
 import traceback
@@ -1035,6 +1036,9 @@ def public_share(token):
                   if row and row["share_show_images"] else [])
     conn.close()
     if not row:
+        if token.startswith("c_"):
+            from conversation_sharing import public_answer
+            return public_answer(sys.modules[__name__], token)
         return None
     return dict(
         created_at=row["created_at"].isoformat(),
@@ -1094,6 +1098,9 @@ def _serve_shared_image(token, sha, want_thumb):
         return jsonify(error="not_found"), 404
     prompt_id = _shared_prompt_id(token)
     if prompt_id is None:
+        from conversation_sharing import image_allowed
+        if token.startswith("c_") and image_allowed(sys.modules[__name__], token, sha):
+            return _serve_image(sha, want_thumb)
         return jsonify(error="not_found"), 404
     # A share token only unlocks the images actually attached to *that* prompt -
     # content-addressed shas are otherwise guessable, so this join is the only
@@ -1194,7 +1201,8 @@ def local_api():
 
 
 from conversations import register_routes
-import sys
+from conversation_sharing import register_sharing
 register_routes(app, sys.modules[__name__])
+register_sharing(app, sys.modules[__name__])
 
 init_db()

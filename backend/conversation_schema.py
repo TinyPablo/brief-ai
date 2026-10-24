@@ -60,3 +60,11 @@ CONVERSATION_MIGRATIONS = (
     """CREATE INDEX IF NOT EXISTS conversations_updated_idx
        ON conversations(updated_at DESC, id)""",
 )
+
+CONVERSATION_MIGRATIONS += (
+    'ALTER TABLE conversation_messages ADD COLUMN IF NOT EXISTS share_token TEXT',
+    'ALTER TABLE conversation_messages ADD COLUMN IF NOT EXISTS share_show_prompt BOOLEAN NOT NULL DEFAULT TRUE',
+    'ALTER TABLE conversation_messages ADD COLUMN IF NOT EXISTS share_show_images BOOLEAN NOT NULL DEFAULT FALSE',
+    '''CREATE UNIQUE INDEX IF NOT EXISTS conversation_messages_share_idx
+       ON conversation_messages(share_token) WHERE share_token IS NOT NULL''',
+)

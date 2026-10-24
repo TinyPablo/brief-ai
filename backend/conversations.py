@@ -120,6 +120,16 @@ def register_routes(app, api):
                         (cid, body['context'] or None))
             return enqueue(cur, cid, body, 0, 0)
 
+    @app.get('/api/conversation-requests/<uuid:request_id>')
+    @api.require_auth
+    def get_request(request_id):
+        with database(api) as cur:
+            cur.execute('SELECT conversation_id FROM conversation_jobs WHERE id = %s', (str(request_id),))
+            row = cur.fetchone()
+            if not row:
+                return jsonify(error='not_found'), 404
+            return jsonify(id=str(row['conversation_id']), job_id=str(request_id))
+
     @app.get('/api/conversations')
     @api.require_auth
     def list_conversations():

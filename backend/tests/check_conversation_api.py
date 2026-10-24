@@ -70,8 +70,29 @@ def check_api():
         state = client().get('/api/conversations/' + cid).json
         assert state['job']['status'] == 'completed'
         assert len(state['messages']) == 2
+        assert client().get('/api/conversation-requests/' + body['request_id']).json['id'] == cid
+        assistant_id = state['messages'][1]['id']
+        settings = client().get('/api/conversation-messages/' + assistant_id)
+        assert settings.json['prompt_is_raw'] is True
+        assert api.app.test_client().get('/api/conversation-messages/' + assistant_id).status_code == 401
+        share = post('/api/conversation-messages/' + assistant_id + '/share', show_prompt=True, show_images=False)
+        token = share.json['token']
+        public = api.app.test_client().get('/api/share/' + token)
+        assert public.status_code == 200
+        assert public.json['prompt'] == 'A'
+        assert public.json['answer'] == 'B'
+        assert 'context' not in public.json and 'messages' not in public.json
+        assert public.json['images'] == []
+        assert len(client().get('/api/conversation-shares').json['items']) == 1
         mid = state['messages'][0]['id']
         assert state['messages'][0]['images']
+        image_sha = state['messages'][0]['images'][0]['sha']
+        assert api.app.test_client().get('/api/share/' + token + '/images/' + image_sha).status_code == 404
+        assert client().patch('/api/conversation-messages/' + assistant_id + '/share', json={'show_images': True}).status_code == 200
+        assert api.app.test_client().get('/api/share/' + token + '/images/' + image_sha).status_code == 200
+        assert api.app.test_client().get('/api/share/' + token + '/images/' + '0' * 64).status_code == 404
+        assert client().patch('/api/conversation-messages/' + assistant_id + '/share', json={'show_prompt': False}).status_code == 200
+        assert api.app.test_client().get('/api/share/' + token).json['prompt'] is None
         assert calls[-1][1][0]['role'] == 'user'
         assert 'Test context' in calls[-1][1][0]['parts'][-1]['text']
 
@@ -145,6 +166,7 @@ def check_api():
             cur.execute('INSERT INTO prompt_images VALUES (%s, %s, 0)', (legacy_id, sha))
         assert client().delete(f'/api/conversations/{cid}/messages/{mid}').json['deleted_conversation']
         assert client().get('/api/conversations/' + cid).status_code == 404
+        assert api.app.test_client().get('/api/share/' + token).status_code == 404
         assert client().get('/api/history/' + str(legacy_id)).status_code == 200
         assert client().get('/api/images/' + sha).status_code == 200
         assert client().delete('/api/history/' + str(legacy_id)).status_code == 200

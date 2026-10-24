@@ -67,7 +67,7 @@ separate changes.
 The worker uses the backend image and environment. After building this stage:
 
 ```bash
-docker compose up -d --build backend worker
+docker compose up -d --build backend worker frontend
 docker compose ps
 ```
 
@@ -87,6 +87,30 @@ transaction. The API check uses and removes an isolated temporary schema, stubs
 providers, and does not issue real model requests. Run these checks against a
 local test database.
 
-The existing `/api/generate` and frontend remain available until the conversation
-UI is connected. Rolling back this stage requires stopping the worker and
-restoring the previous backend image; the additive tables can remain in place.
+The frontend restores the active conversation ID from session storage, polls its
+job while generation is pending, and lists new conversations separately from
+earlier standalone answers. A client-generated request ID also allows recovery
+when a page refresh happens before the create response arrives. No message text
+or image bytes are stored in session storage. Multi-conversation session caching
+and gesture navigation are separate changes.
+
+Individual assistant answers retain public sharing. A link exposes only that
+answer and, optionally, its immediate user question and images. Earlier turns,
+Settings context and diagnostics are never included. Deleting a shared answer
+through truncation revokes its link. The Shared tab lists both conversation
+answers and earlier standalone links.
+
+`GET /api/conversation-requests/<request_id>` recovers the conversation created
+by a submission. Sharing settings use `/api/conversation-messages/<message_id>`
+and its `/share` subroute, and `/api/conversation-shares` lists active links.
+
+An optional browser check requires Playwright and Chrome and uses fake API
+responses without model calls:
+
+```bash
+python3 backend/tests/check_conversation_ui.py
+```
+
+The existing `/api/generate` endpoint remains available for older clients.
+Rolling back requires stopping the worker and restoring the previous backend
+and frontend images; the additive tables can remain in place.
