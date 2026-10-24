@@ -56,7 +56,7 @@ def check_navigation():
             browser = p.chromium.launch(executable_path='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless=True)
             context = browser.new_context(viewport={'width': 1440, 'height': 1000}, has_touch=True, reduced_motion='no-preference')
             context.add_init_script('''window.motion = []; const original = Element.prototype.animate;
-              Element.prototype.animate = function(frames, options) { window.motion.push({frames,options}); return original.call(this,frames,options); };''')
+              Element.prototype.animate = function(frames, options) { window.motion.push({frames,options}); const a=original.call(this,frames,options); if(window.pauseTransitions){a.pause();a.currentTime=180;}return a; };''')
             page = context.new_page()
             page.on('pageerror', lambda error: (errors.append(str(error)), print('Browser error:', error, flush=True)))
             page.route('**/api/**', route_api)
@@ -82,9 +82,23 @@ def check_navigation():
             expect(active).to_have_attribute('data-conversation-id', cid)
             assert 'Kraków' in body['context'] and 'Prefer Polish' in body['context']
             # A completed answer keeps polling only while its title job is pending.
+            page.evaluate('window.pauseTransitions = true')
             page.get_by_role('button', name='New conversation', exact=True).click()
             expect(page.get_by_role('button', name='Previous conversation: Weekend w Krakowie')).to_be_visible(timeout=10000)
             assert reads >= 2
+            page.wait_for_function('document.getAnimations().length >= 2')
+            clipping = page.evaluate('''() => {
+              document.getAnimations().forEach(a => { a.pause(); a.currentTime = 180; });
+              const frame = document.querySelector('.conversation-outgoing');
+              const incoming = document.querySelector('[data-conversation-view]:not([hidden])');
+              return {clip:getComputedStyle(frame).overflow, fixed:getComputedStyle(frame).transform,
+                outgoing:Number(getComputedStyle(frame.firstElementChild).opacity),
+                incoming:Number(getComputedStyle(incoming).opacity)};
+            }''')
+            assert clipping['clip'] == 'hidden' and clipping['fixed'] == 'none'
+            assert 0 < clipping['outgoing'] < 1 and 0 < clipping['incoming'] < 1
+            page.evaluate('window.pauseTransitions = false; document.getAnimations().forEach(a => a.finish())')
+            expect(page.locator('.conversation-outgoing')).to_have_count(0)
             active.locator('textarea').fill('Beta')
             side = page.get_by_role('button', name='Previous conversation: Weekend w Krakowie').bounding_box()
             stage = page.locator('.conversation-stage').bounding_box()
@@ -136,6 +150,16 @@ def check_navigation():
             page.set_viewport_size({'width': 390, 'height': 844})
             page.screenshot(path='/private/tmp/brief-navigation-mobile.png', full_page=True)
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Mobile horizontal overflow'
+            page.emulate_media(reduced_motion='no-preference')
+            count = page.locator('[data-conversation-view]').count()
+            page.get_by_role('button', name='New conversation', exact=True).click()
+            expect(page.locator('[data-conversation-view]')).to_have_count(count + 1)
+            page.get_by_role('button', name='Previous conversation: Gamma').click()
+            expect(page.locator('[data-conversation-view]')).to_have_count(count)
+            expect(page.get_by_role('button', name='Next conversation: New conversation')).to_have_count(0)
+            page.get_by_role('button', name='New conversation', exact=True).click()
+            page.get_by_role('button', name='Close conversation', exact=True).click()
+            expect(page.locator('[data-conversation-view]')).to_have_count(count)
             assert not errors, errors
             browser.close()
             print('PASS: Settings-only context, async title polling, side layout, transitions, trackpad momentum, vertical scrolling, editor/code/pinch exclusions, touch swipe, modal exclusion, reduced motion and mobile layout')

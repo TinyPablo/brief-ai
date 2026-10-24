@@ -135,7 +135,7 @@ The interface is displayed at 120% of its earlier scale.
 
 The main composer does not contain context controls. Date/time, location and
 personal context are configured in Settings and are captured when a conversation
-starts. The selected model's diagnostic information is also shown in Settings.
+starts. The session diagnostics panel is not displayed.
 
 ## Automatic titles
 
@@ -163,15 +163,66 @@ The migration adds title state and usage columns to `conversations`. Existing
 conversations are not batch-processed for titles; a later successful follow-up
 can queue a missing title. Legacy standalone history remains unchanged.
 
-Individual assistant answers retain public sharing. A link exposes only that
-answer and, optionally, its immediate user question and images. Earlier turns,
-Settings context and diagnostics are never included. Deleting a shared answer
-through truncation revokes its link. The Shared tab lists both conversation
-answers and earlier standalone links.
+## Branches
+
+The Branch action on any assistant message creates an independent conversation
+containing all messages and attachments up to and including that answer. The
+source conversation remains unchanged. The copy opens immediately to its right.
+The `POST /api/conversations/<id>/branches` body contains `message_id` and a
+client-generated UUID `request_id`; retries return the same branch. Reusing an
+ID for a different source returns HTTP 409.
+
+Messages receive new IDs while keeping their content, timestamps, model and
+original usage metadata. Copied rows have `inherited = true` and do not represent
+new provider requests. Future branch replies have `inherited = false`.
+Attachment associations are copied, while image bytes remain deduplicated.
+Settings context is copied into the independent conversation. Source IDs are
+retained as provenance without foreign keys, so deleting the source cannot
+remove the branch. A branch with an existing title receives a short branch suffix.
+
+## Public snapshots
+
+Share offers three scopes: `answer` (only the selected answer), `exchange`
+(the immediate question and answer), and `conversation` (all messages through
+the selected answer). The default is `conversation`. Attachments belonging to
+included messages are always included; no separate image checkbox is shown.
+Settings context, diagnostics and usage/cost fields are excluded.
+
+Publishing stores an immutable JSON snapshot and references to the included
+source messages and images. Later follow-ups do not change it. Update snapshot
+explicitly replaces its contents under the same URL. Stop sharing revokes it.
+The Shared tab lists active links, and public pages render the stored messages
+as a conversation.
+
+Deleting any included source message revokes the entire snapshot. Deleting a
+later message outside the snapshot leaves its link active. Deleting a source
+conversation revokes its links but leaves branch conversations and their links
+independent. Postgres deletion triggers invalidate snapshots even when source
+messages are removed outside the API. Image authorization checks the snapshot's
+own attachment references, so a token cannot retrieve other conversation images.
 
 `GET /api/conversation-requests/<request_id>` recovers the conversation created
 by a submission. Sharing settings use `/api/conversation-messages/<message_id>`
-and its `/share` subroute, and `/api/conversation-shares` lists active links.
+and its `/share` subroute. POST/PATCH accept `{ "scope": "conversation" }`,
+`{ "scope": "exchange" }`, or `{ "scope": "answer" }`.
+`/api/conversation-shares` lists active links. Older single-answer links and
+legacy standalone sharing remain readable; updating a conversation link creates
+a snapshot. Existing older-client question visibility flags remain accepted,
+while attachments always follow included messages in new snapshots.
+
+## Composer controls
+
+New and Close are always visible in the sticky application header. Close removes
+only the open view and asks before discarding a draft. A completely empty view
+is removed automatically when another view or another application section is
+selected; a view with text, attachments or a pending submission is kept.
+Clicking New while already in an empty view gives a short scale acknowledgement.
+
+Transitions clip both panes at the chat boundaries, with synchronized slide and
+fade animations. The outgoing clipping window remains stationary, preventing the
+old pane from covering the incoming pane or crossing the side navigation.
+Reduced-motion preferences disable these animations. The session diagnostics
+panel has been removed from the interface, including Settings.
 
 An optional browser check requires Playwright and Chrome and uses fake API
 responses without model calls:
@@ -181,6 +232,8 @@ python3 backend/tests/check_conversation_ui.py
 python3 backend/tests/check_session_storage.py
 python3 backend/tests/check_conversation_sessions.py
 python3 backend/tests/check_conversation_navigation.py
+python3 backend/tests/check_conversation_fork_ui.py
+PYTHONPATH=backend python3 backend/tests/check_conversation_forks.py
 ```
 
 The existing `/api/generate` endpoint remains available for older clients.
