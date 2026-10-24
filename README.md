@@ -2,15 +2,23 @@
 
 Brief AI delivers quick, clear answers with fast models and a simple interface.
 
-One prompt in, one answer out - no chat threads. Every prompt and answer is
-stored with its model, timing, token usage, and price, so you can browse the full
-history later. The whole thing sits behind Google Authenticator (TOTP) login with a
+Start with a quick question and continue with follow-up messages. Conversations
+save automatically, with a model, timestamp, token usage and price recorded for
+each answer. Switch providers within a conversation while retaining its previous
+messages and images. Earlier standalone answers remain available in History. The whole thing sits behind Google Authenticator (TOTP) login with a
 persistent session, so you log in once and stay in across tabs.
 
 > Bootstrapped with Claude Opus 4.8.
 
 ## Features
 
+- Automatically saved conversations with follow-ups, per-message timestamps and model switching.
+- Independent branches from any assistant answer, retaining the preceding conversation and attachments.
+- Multiple open conversations per browser tab, with independent drafts, images, model selections and scroll positions.
+- Local draft recovery after refresh, instant switching between cached conversations and background reply indicators.
+- Automatic conversation titles, adjacent navigation, touch/trackpad gestures and directional slide transitions.
+- Background generation survives a browser refresh; interrupted worker jobs can be retried explicitly.
+- Delete a user message and all later replies, or delete the first message to remove the conversation.
 - Command Deck interface with matching Settings panels and a Shared tab for active public links.
 - Swipe left on a History entry to reveal Delete, then explicitly confirm removal.
 - Google Authenticator (TOTP) login with a persistent session cookie.
@@ -23,12 +31,13 @@ persistent session, so you log in once and stay in across tabs.
 - Attach multiple images to a prompt (drag & drop, paste, or the file picker) on cloud models -
   up to 20 images, 10MB per image, 24MB total per prompt. Limits are enforced both in the
   browser and on the server. Attachments are stored and shown again in History.
-- Publish from the answer or History with independent question/image visibility controls,
-  editable settings, and revocable links. Public pages include Open Graph metadata and
-  request no indexing; personal settings and diagnostics remain private.
+- Share immutable snapshots of one answer, a question/answer pair, or the conversation up
+  to an answer. Included messages retain their attachments. Deleting an included source
+  revokes its link; later follow-ups stay private. Legacy standalone links remain supported.
+  Public pages include Open Graph metadata and request no indexing; Settings and diagnostics remain private.
 - Full-size attachment gallery in the composer, History, and shared answers, with zoom,
   original-image download, keyboard navigation, and mobile swipe.
-- Optional prompt context (date, location, personal data) toggled in Settings and stored in the
+- Optional prompt context (date, location, personal data) configured exclusively in Settings and stored in the
   browser. It's stored in its own database column, never glued into the prompt, so History shows
   the question you actually asked and the personal bits stay separable.
 - Live cost estimate (input only - text + attached images) from the prompt before sending.
@@ -41,8 +50,11 @@ persistent session, so you log in once and stay in across tabs.
 
 - **Frontend** - React + Tailwind (vendored locally, no build step), served by nginx.
 - **Backend** - Python / Flask + gunicorn, with cloud providers and optional local inference.
+- **Generation worker** - durable Postgres queue, independent of HTTP requests.
 - **Database** - PostgreSQL.
 - **Orchestration** - Docker Compose.
+
+See [conversation storage, API and verification](docs/conversations.md) for details.
 
 ## Optional local AI
 
@@ -65,6 +77,7 @@ Then edit `.env`:
 | `TOTP_SECRET`       | Secret for Google Authenticator login (see below).              |
 | `SECRET_KEY`        | Long random string for signing session cookies.                |
 | `COOKIE_SECURE`     | `true` in production (https); `false` only for local http tests.|
+| `CONVERSATION_WORKERS` | Concurrent background generations, 1-8; default 4. |
 | `POSTGRES_*`        | Database name, user, and password.                             |
 
 Generate a secret key with:
