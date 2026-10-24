@@ -19,7 +19,7 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     restart: unless-stopped
-    environment:
+    environment: &backend-environment
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
@@ -27,6 +27,19 @@ services:
       SECRET_KEY: ${SECRET_KEY}
       COOKIE_SECURE: ${COOKIE_SECURE}
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: ["python", "conversation_worker.py"]
+    restart: unless-stopped
+    environment:
+      <<: *backend-environment
+      CONVERSATION_WORKERS: ${CONVERSATION_WORKERS:-4}
     depends_on:
       db:
         condition: service_healthy

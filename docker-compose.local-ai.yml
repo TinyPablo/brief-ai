@@ -5,6 +5,21 @@ services:
       LOCAL_AI_URL: http://local-ai:8080
       LOCAL_AI_API_KEY: ${LOCAL_AI_API_KEY:-}
       DEFAULT_MODEL: ${DEFAULT_MODEL:-gemini-3.1-flash-lite}
+      LOCAL_AI_LOCK: /locks/local-ai.lock
+    volumes:
+      - inference_locks:/locks
+    networks:
+      - default
+      - inference
+
+  worker:
+    environment:
+      LOCAL_AI_URL: http://local-ai:8080
+      LOCAL_AI_API_KEY: ${LOCAL_AI_API_KEY:-}
+      DEFAULT_MODEL: ${DEFAULT_MODEL:-gemini-3.1-flash-lite}
+      LOCAL_AI_LOCK: /locks/local-ai.lock
+    volumes:
+      - inference_locks:/locks
     networks:
       - default
       - inference
@@ -62,3 +77,6 @@ services:
 networks:
   inference:
     internal: true
+
+volumes:
+  inference_locks:

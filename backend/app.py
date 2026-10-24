@@ -276,6 +276,8 @@ def init_db():
         raise RuntimeError("Could not connect to the database")
     try:
         with conn, conn.cursor() as cur:
+            # Web and queue workers may start together against the same database.
+            cur.execute("SELECT pg_advisory_xact_lock(476, 0)")
             cur.execute(CREATE_SQL)
             cur.execute(IMAGES_SQL)
             cur.execute(PROMPT_IMAGES_SQL)
@@ -287,6 +289,7 @@ def init_db():
                 cur.execute(statement)
     except psycopg2.Error as exc:
         print("init_db:", exc)
+        raise
     finally:
         conn.close()
 
@@ -453,7 +456,7 @@ def validate_images(images):
     return None, decoded
 
 
-def store_images(cur, prompt_id, images):
+def store_images(cur, prompt_id, images, *, conversation=False):
     """Persist the attachments of one prompt.
 
     Content addressing makes the image insert idempotent: ON CONFLICT DO
@@ -474,10 +477,16 @@ def store_images(cur, prompt_id, images):
              psycopg2.Binary(img["thumb"]) if img["thumb"] else None,
              img["thumb_media_type"]),
         )
-        cur.execute(
-            "INSERT INTO prompt_images (prompt_id, image_sha, position) VALUES (%s, %s, %s)",
-            (prompt_id, img["sha256"], position),
-        )
+        if conversation:
+            cur.execute(
+                "INSERT INTO conversation_message_images (message_id, image_sha, position) "
+                "VALUES (%s, %s, %s)", (prompt_id, img["sha256"], position),
+            )
+        else:
+            cur.execute(
+                "INSERT INTO prompt_images (prompt_id, image_sha, position) VALUES (%s, %s, %s)",
+                (prompt_id, img["sha256"], position),
+            )
 
 
 def delete_orphan_images(cur, shas):
@@ -544,7 +553,7 @@ def require_auth(view):
     return wrapper
 
 
-def call_anthropic(model, prompt, depth, images=None):
+def call_anthropic(model, prompt, depth, images=None, messages=None):
     if anthropic_client is None:
         raise RuntimeError("ANTHROPIC_API_KEY is not configured")
     cfg = MODELS[model]
@@ -559,7 +568,7 @@ def call_anthropic(model, prompt, depth, images=None):
         model=model,
         max_tokens=MAX_TOKENS,
         system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": content}],
+        messages=messages if messages is not None else [{"role": "user", "content": content}],
     )
     reasoning = cfg.get("reasoning", {}).get(depth)
     if reasoning:
@@ -600,7 +609,7 @@ def call_anthropic(model, prompt, depth, images=None):
 
 
 
-def call_gemini(model, prompt, depth, images=None):
+def call_gemini(model, prompt, depth, images=None, messages=None):
     if gemini_client is None:
         raise RuntimeError("GEMINI_API_KEY is not configured")
 
@@ -620,7 +629,7 @@ def call_gemini(model, prompt, depth, images=None):
 
     resp = gemini_client.models.generate_content(
         model=model,
-        contents=contents,
+        contents=messages if messages is not None else contents,
         config=genai_types.GenerateContentConfig(**config_args),
     )
 
@@ -651,7 +660,7 @@ def call_gemini(model, prompt, depth, images=None):
     }
 
 
-def call_openai(model, prompt, depth, images=None):
+def call_openai(model, prompt, depth, images=None, messages=None):
     if openai_client is None:
         raise RuntimeError("OPENAI_API_KEY is not configured")
 
@@ -664,10 +673,9 @@ def call_openai(model, prompt, depth, images=None):
     kwargs = dict(
         model=model,
         max_completion_tokens=MAX_TOKENS,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
+        messages=[{"role": "system", "content": SYSTEM_PROMPT}] + (
+            messages if messages is not None else [{"role": "user", "content": user_content}]
+        ),
     )
     reasoning = MODELS[model].get("reasoning", {}).get(depth)
     if reasoning:
@@ -1184,5 +1192,9 @@ def local_api():
     except local_inference.LocalError as exc:
         return jsonify(error={"message": exc.detail, "type": exc.code}), exc.status
 
+
+from conversations import register_routes
+import sys
+register_routes(app, sys.modules[__name__])
 
 init_db()
