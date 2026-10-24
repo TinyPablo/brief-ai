@@ -270,7 +270,68 @@ function Modal({ title, onClose, children }) {
   );
 }
 
-function ShareDialog({ itemId, onClose, onChanged, onUnauth, basePath = '/history/' }) {
+function ShareDialog(props) {
+  return props.basePath === '/conversation-messages/' ? <ConversationShareDialog {...props} /> : <LegacyShareDialog {...props} />;
+}
+
+function ConversationShareDialog({ itemId, onClose, onChanged, onUnauth }) {
+  const [scope, setScope] = useState('conversation');
+  const [token, setToken] = useState(null);
+  const [created, setCreated] = useState(null);
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    let active = true;
+    api('/conversation-messages/' + itemId).then(async (res) => {
+      if (res.status === 401) { onUnauth(); return; }
+      if (!res.ok) throw new Error('Could not load sharing settings.');
+      const data = await res.json();
+      if (!active) return;
+      setToken(data.share_token);
+      setCreated(data.snapshot_created_at);
+      if (data.share_scope) setScope(data.share_scope);
+      setLoaded(true);
+    }).catch((e) => { if (active) setError(e.message); });
+    return () => { active = false; };
+  }, [itemId]);
+  const save = async (revoke = false) => {
+    setBusy(true); setError(''); setCopied(false);
+    try {
+      const res = await api('/conversation-messages/' + itemId + '/share', {
+        method: revoke ? 'DELETE' : token ? 'PATCH' : 'POST',
+        ...(!revoke ? { body: JSON.stringify({ scope }) } : {}),
+      });
+      if (res.status === 401) { onUnauth(); return; }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Could not update sharing.');
+      setToken(revoke ? null : data.token);
+      setCreated(revoke ? null : data.snapshot_created_at);
+      onChanged?.(itemId, revoke ? null : data.token);
+    } catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  };
+  const url = token ? location.origin + '/s/' + token : '';
+  return <Modal title="Share conversation" onClose={onClose}>
+    <p className="text-muted text-sm mb-5">Anyone with the link can read this snapshot. Later messages stay private.</p>
+    <fieldset disabled={!loaded || busy} className="space-y-4">
+      {[['answer', 'Only this answer'], ['exchange', 'Question and answer'], ['conversation', 'Conversation up to this answer']].map(([value, label]) => <label key={value} className="sharing-option"><input type="radio" name="share-scope" value={value} checked={scope === value} onChange={() => setScope(value)} /><span>{label}</span></label>)}
+    </fieldset>
+    <p className="text-sm text-muted mt-5">Attachments from included messages are shared too. Deleting an included message disables the link.</p>
+    {token && <div className="mt-6 space-y-3">
+      {created && <p className="text-xs text-muted">Snapshot: {fmtTime(created)}</p>}
+      <label className="text-xs text-muted" htmlFor="snapshot-link">Public link</label>
+      <input id="snapshot-link" className="deck-input w-full" value={url} readOnly onFocus={(e) => e.target.select()} />
+      <button type="button" className="deck-button" onClick={async () => { try { await navigator.clipboard.writeText(url); setCopied(true); } catch { setError('Select and copy the link above.'); } }}>{copied ? 'Copied' : 'Copy link'}</button>
+      <a className="text-accent text-sm ml-4" href={url} target="_blank" rel="noopener noreferrer">Preview ↗</a>
+    </div>}
+    {error && <p role="alert" className="text-bad text-sm mt-4">{error}</p>}
+    <div className="flex flex-wrap gap-3 mt-6"><button type="button" className="deck-button primary" disabled={!loaded || busy} onClick={() => save()}>{busy ? 'Saving…' : token ? 'Update snapshot' : 'Publish link'}</button>{token && <button type="button" className="deck-button text-bad" disabled={busy} onClick={() => save(true)}>Stop sharing</button>}</div>
+  </Modal>;
+}
+
+function LegacyShareDialog({ itemId, onClose, onChanged, onUnauth, basePath = '/history/' }) {
   const [loaded, setLoaded] = useState(false);
   const [allowed, setAllowed] = useState(false);
   const [token, setToken] = useState(null);
@@ -420,7 +481,13 @@ function SharedView({ token }) {
           brief_ai<span className="text-accent glow">$</span>
         </div>
 
-        <div className="corner-panel bg-panel border border-edge rounded-2xl p-5">
+        {data.messages ? <div className="space-y-4">
+          {data.messages.map((message, index) => <section key={index} className={'corner-panel border border-edge p-5 ' + (message.role === 'user' ? 'bg-panel2' : 'bg-panel')}>
+            <div className="font-mono text-[11px] text-muted mb-4 flex flex-wrap gap-3"><span>{message.role === 'user' ? 'You' : message.model_label}</span><time dateTime={message.created_at}>{fmtTime(message.created_at)}</time></div>
+            {message.role === 'user' ? <div className="whitespace-pre-wrap break-words">{message.content}</div> : <Markdown text={message.content} />}
+            {!!message.images?.length && <div className="mt-3"><AttachmentStrip images={message.images} size={76} base={'/api/share/' + token + '/images/'} /></div>}
+          </section>)}
+        </div> : <div className="corner-panel bg-panel border border-edge rounded-2xl p-5">
           <div className="flex items-center gap-3 text-xs uppercase tracking-wide text-muted mb-1.5">
             <span>{data.prompt === null ? 'Shared answer' : 'Question'}</span>
             <span className="ml-auto normal-case text-[11px]">{fmtTime(data.created_at)}</span>
@@ -437,7 +504,7 @@ function SharedView({ token }) {
             <span className="ml-auto normal-case text-accent2 text-[11px]">{data.model_label}</span>
           </div>
           <Markdown text={data.answer} />
-        </div>
+        </div>}
       </div>
     </div>
   );
@@ -732,7 +799,7 @@ function TrashIcon() {
   return <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" /></svg>;
 }
 
-function ConversationWorkspace({ models, defaultModel, rate, imageLimits, settings, setSettings, onEditSettings, onUnauth, visible, openRequest, onModelChange }) {
+function ConversationWorkspace({ models, defaultModel, rate, imageLimits, settings, onUnauth, visible, openRequest, onModelChange, actionsRef, onReady }) {
   const [workspace, setWorkspace] = useState(null);
   const [storageError, setStorageError] = useState(false);
   const [closeKey, setCloseKey] = useState(null);
@@ -740,8 +807,19 @@ function ConversationWorkspace({ models, defaultModel, rate, imageLimits, settin
   const workspaceRef = useRef(null);
   const visibleRef = useRef(visible);
   const positioning = useRef(false);
+  const elementRef = useRef(null);
+  const transitionLayer = useRef(null);
+  const transitions = useRef(null);
   visibleRef.current = visible;
   const publish = useCallback((next) => {
+    const previous = workspaceRef.current;
+    if (previous && previous.active !== next.active && visibleRef.current) {
+      const oldIndex = previous.views.findIndex((view) => view.key === previous.active);
+      const newIndex = previous.views.findIndex((view) => view.key === next.active);
+      const direction = newIndex < 0 || newIndex > oldIndex ? 1 : -1;
+      const outgoing = elementRef.current?.querySelector('[data-conversation-view]:not([hidden])');
+      transitions.current?.capture(outgoing, direction);
+    }
     workspaceRef.current = next;
     setWorkspace(next);
     storageRef.current.setOrder(next.views, next.active);
@@ -785,13 +863,21 @@ function ConversationWorkspace({ models, defaultModel, rate, imageLimits, settin
   const select = useCallback((key) => {
     const current = rememberPosition();
     if (!current || current.active === key) return;
-    publish({ ...current, active: key });
+    const leaving = current.views.find((view) => view.key === current.active);
+    const empty = leaving && !leaving.conversationId && !leaving.prompt && !leaving.images.length && !leaving.pendingRequest;
+    const views = empty ? current.views.filter((view) => view.key !== leaving.key) : current.views;
+    publish({ ...current, views, active: key });
+    if (empty) storageRef.current.remove(leaving.key).catch(() => {});
   }, [publish, rememberPosition]);
 
   const insert = useCallback((view) => {
     const current = rememberPosition();
-    const views = [...current.views];
-    views.splice(views.findIndex((v) => v.key === current.active) + 1, 0, view);
+    const leaving = current.views.find((item) => item.key === current.active);
+    const empty = leaving && !leaving.conversationId && !leaving.prompt && !leaving.images.length && !leaving.pendingRequest;
+    const insertion = current.views.findIndex((item) => item.key === current.active) + (empty ? 0 : 1);
+    const views = empty ? current.views.filter((item) => item.key !== leaving.key) : [...current.views];
+    views.splice(insertion, 0, view);
+    if (empty) storageRef.current.remove(leaving.key).catch(() => {});
     storageRef.current.save(view).catch(() => {});
     publish({ views, active: view.key });
   }, [publish, rememberPosition]);
@@ -799,7 +885,17 @@ function ConversationWorkspace({ models, defaultModel, rate, imageLimits, settin
   const newConversation = useCallback(() => {
     const current = workspaceRef.current;
     const empty = current.views.find((v) => !v.conversationId && !v.prompt && !v.images.length && !v.pendingRequest);
-    if (empty) select(empty.key);
+    if (empty && empty.key === current.active) {
+      const panel = elementRef.current?.querySelector('[data-conversation-view]:not([hidden])');
+      if (panel && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        panel.getAnimations().forEach((animation) => animation.cancel());
+        panel.animate([
+          { transform: 'scale(1)' },
+          { transform: 'scale(1.018)', offset: 0.45 },
+          { transform: 'scale(1)' },
+        ], { duration: 300, easing: 'ease-in-out' });
+      }
+    } else if (empty) select(empty.key);
     else insert(BriefSessions.freshView(null, defaultModel));
   }, [defaultModel, insert, select]);
 
@@ -857,6 +953,26 @@ function ConversationWorkspace({ models, defaultModel, rate, imageLimits, settin
     return () => { clearTimeout(timer); window.removeEventListener('scroll', onScroll); window.removeEventListener('pagehide', savePosition); window.removeEventListener('briefai:before-navigation', savePosition); };
   }, [updateView]);
 
+  useEffect(() => {
+    if (!workspace || !elementRef.current) return;
+    transitions.current = new BriefNavigation.Transitions(transitionLayer.current);
+    const detach = BriefNavigation.gestures(elementRef.current, () => visibleRef.current, (direction) => {
+      const current = workspaceRef.current;
+      const index = current.views.findIndex((view) => view.key === current.active);
+      const neighbor = current.views[index + direction];
+      if (neighbor) select(neighbor.key);
+    });
+    return () => { detach(); transitions.current?.cancel(); };
+  }, [!!workspace, select]);
+  useEffect(() => {
+    if (visible) return;
+    transitions.current?.cancel();
+    const current = workspaceRef.current;
+    if (!current) return;
+    const leaving = current.views.find((view) => view.key === current.active);
+    if (leaving && current.views.length > 1 && !leaving.conversationId && !leaving.prompt && !leaving.images.length && !leaving.pendingRequest) remove(leaving.key);
+  }, [visible, remove]);
+
   const active = workspace?.views.find((v) => v.key === workspace.active);
   const messageCount = active?.conversation?.messages?.length || 0;
   React.useLayoutEffect(() => {
@@ -865,6 +981,7 @@ function ConversationWorkspace({ models, defaultModel, rate, imageLimits, settin
     const frame = requestAnimationFrame(() => {
       const target = active.atBottom && messageCount ? document.documentElement.scrollHeight : active.scroll;
       window.scrollTo(0, target);
+      transitions.current?.play(elementRef.current?.querySelector('[data-conversation-view]:not([hidden])'));
       if (active.atBottom && active.unread) updateView(active.key, { unread: false });
       requestAnimationFrame(() => { positioning.current = false; });
     });
@@ -881,6 +998,20 @@ function ConversationWorkspace({ models, defaultModel, rate, imageLimits, settin
     return () => clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    if (!workspace) return;
+    actionsRef.current = {
+      newConversation,
+      close() {
+        const current = workspaceRef.current;
+        const view = current.views.find((item) => item.key === current.active);
+        if (view.prompt || view.images.length || view.pendingRequest) setCloseKey(view.key);
+        else remove(view.key);
+      },
+    };
+    onReady(true);
+    return () => { actionsRef.current = null; onReady(false); };
+  }, [!!workspace, newConversation, remove, actionsRef, onReady]);
   if (!workspace) return <p role="status" className="text-sm text-muted">Restoring workspace…</p>;
   const index = workspace.views.findIndex((v) => v.key === workspace.active);
   const previous = workspace.views[index - 1];
@@ -891,27 +1022,28 @@ function ConversationWorkspace({ models, defaultModel, rate, imageLimits, settin
     if (active.prompt || active.images.length || active.pendingRequest) setCloseKey(active.key);
     else remove(active.key);
   };
-  return <div className="conversation-workspace">
+  return <div className="conversation-workspace" ref={elementRef}>
     {storageError && <p role="alert" className="text-sm text-bad mb-4">Draft changes could not be saved locally. Keep this tab open to retain them.</p>}
     <nav aria-label="Open conversations" className="conversation-navigation">
       <div>{previous && <button type="button" className="conversation-neighbor" aria-label={'Previous conversation: ' + label(previous)} onClick={() => select(previous.key)}><span aria-hidden="true">←</span><span className="min-w-0 break-words">{label(previous)}{status(previous) && <small className="block text-accent2">{status(previous)}</small>}</span></button>}</div>
-      <div className="conversation-actions"><button type="button" onClick={newConversation}>+ New conversation</button><button type="button" aria-label="Close conversation" title="Close conversation" onClick={requestClose}>×</button></div>
       <div>{next && <button type="button" className="conversation-neighbor next" aria-label={'Next conversation: ' + label(next)} onClick={() => select(next.key)}><span className="min-w-0 break-words">{label(next)}{status(next) && <small className="block text-accent2">{status(next)}</small>}</span><span aria-hidden="true">→</span></button>}</div>
     </nav>
+    <div className="conversation-stage">
     {workspace.views.map((view) => <div key={view.key} data-conversation-view={view.key} data-conversation-id={view.conversationId || ''} hidden={view.key !== workspace.active}>
-      {!view.conversationId && <ContextControls settings={settings} setSettings={setSettings} onEdit={onEditSettings} />}
       <AskView models={models} model={view.model || defaultModel} setModel={(model) => updateView(view.key, { model })}
         rate={rate} imageLimits={imageLimits} settings={settings} onUnauth={onUnauth}
         conversationId={view.conversationId} onConversationChange={changeConversation}
         viewKey={view.key} viewState={view} onViewState={updateView} active={visible && view.key === workspace.active}
-        onDeleted={remove} />
+        onDeleted={remove} onBranch={(id) => insert(BriefSessions.freshView(id, view.model || defaultModel))} onClose={requestClose} />
     </div>)}
+    </div>
+    <div ref={transitionLayer} className="conversation-transition-layer" aria-hidden="true" />
     {active.unread && <button type="button" className="new-reply-button" onClick={() => { window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' }); updateView(active.key, { atBottom: true, unread: false }); }}>New reply ↓</button>}
     {closeKey && <Modal title="Discard draft?" onClose={() => setCloseKey(null)}><p className="text-sm text-muted">Closing this view discards its unsent text and attachments. Sent messages remain in History.</p><div className="flex gap-3 mt-6"><button type="button" className="deck-button" onClick={() => setCloseKey(null)}>Keep open</button><button type="button" className="deck-button danger" onClick={() => remove(closeKey)}>Discard and close</button></div></Modal>}
   </div>;
 }
 
-function AskView({ models, model, setModel, rate, imageLimits, settings, onUnauth, conversationId, onConversationChange, viewKey, viewState, onViewState, active, onDeleted }) {
+function AskView({ models, model, setModel, rate, imageLimits, settings, onUnauth, conversationId, onConversationChange, viewKey, viewState, onViewState, active, onDeleted, onBranch, onClose }) {
   const limits = imageLimits || DEFAULT_IMAGE_LIMITS;
   const groups = useMemo(() => groupByProvider(models), [models]);
   const currentModel = models.find((m) => m.id === model) || null;
@@ -920,6 +1052,8 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
   const [imageError, setImageError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [shareMessage, setShareMessage] = useState(null);
+  const [branching, setBranching] = useState(null);
+  const branchRequests = useRef(new Map());
   const [conversation, setConversation] = useState(viewState.conversation);
   const [restoring, setRestoring] = useState(!!conversationId && !viewState.conversation);
   const [error, setError] = useState('');
@@ -980,7 +1114,7 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
         }
         setRestoring(false);
         setError('');
-        if (['queued', 'running'].includes(data.job?.status)) timer = setTimeout(poll, 1200);
+        if (['queued', 'running'].includes(data.job?.status) || ['queued', 'running'].includes(data.title_status)) timer = setTimeout(poll, 1200);
       } catch (e) {
         if (!cancelled) { setError('Connection lost. Reconnecting…'); timer = setTimeout(poll, 3000); }
       }
@@ -1015,6 +1149,23 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
     recover();
     return () => { cancelled = true; clearTimeout(timer); };
   }, []);
+
+  const branch = async (messageId) => {
+    if (branching) return;
+    setBranching(messageId); setError('');
+    if (!branchRequests.current.has(messageId)) branchRequests.current.set(messageId, crypto.randomUUID());
+    try {
+      const res = await api('/conversations/' + conversationId + '/branches', {
+        method: 'POST', body: JSON.stringify({ message_id: messageId, request_id: branchRequests.current.get(messageId) }),
+      });
+      if (res.status === 401) { onUnauth(); return; }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Could not create branch.');
+      branchRequests.current.delete(messageId);
+      onBranch(data.id);
+    } catch (e) { setError(e.message); }
+    finally { setBranching(null); }
+  };
 
   const retry = async () => {
     setSubmitting(true); setError('');
@@ -1169,12 +1320,13 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
       {restoring && <p className="text-sm text-muted" role="status">Loading conversation…</p>}
       {conversation?.messages.map((message) => (
         <div key={message.id} className={'corner-panel border border-edge ' + (message.role === 'user' ? 'bg-panel2' : 'bg-panel')}>
-          <div className="flex items-center gap-3 px-4 py-2 border-b border-edge font-mono text-[11px] text-muted">
+          <div className="message-toolbar flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2 border-b border-edge font-mono text-[11px] text-muted">
             <span>{message.role === 'user' ? 'You' : models.find((m) => m.id === message.model)?.label || message.model}</span>
             <time dateTime={message.created_at}>{fmtTime(message.created_at)}</time>
             {message.role === 'user'
               ? <button type="button" className="ml-auto hover:text-bad p-1" aria-label="Delete message and later replies" title="Delete message and later replies" disabled={deleting} onClick={() => setDeleteMessage(message.id)}><TrashIcon /></button>
               : <button type="button" className="ml-auto hover:text-white" onClick={async () => { try { await navigator.clipboard.writeText(message.content); setCopied(message.id); setTimeout(() => setCopied(null), 1500); } catch { setError('Clipboard is unavailable. Select the answer to copy it.'); } }}>{copied === message.id ? 'copied' : 'copy'}</button>}
+            {message.role === 'assistant' && <button type="button" onClick={() => branch(message.id)} disabled={!!branching} className="hover:text-accent2 disabled:opacity-40" title="Continue in a separate conversation">{branching === message.id ? 'Creating…' : 'Branch'}</button>}
             {message.role === 'assistant' && <button type="button" onClick={() => setShareMessage(message.id)} className="hover:text-accent2">Share</button>}
           </div>
           <div className="p-5">
@@ -1718,26 +1870,6 @@ function HistoryView({ rate, onUnauth, sharedOnly = false }) {
   );
 }
 
-function ContextControls({ settings, setSettings, onEdit }) {
-  return (
-    <fieldset className="border border-edge bg-panel px-4 py-3 mb-4">
-      <legend className="sr-only">Prompt context</legend>
-      <div className="flex items-center justify-between gap-3 mb-3">
-        <span className="font-mono text-[10px] uppercase tracking-widest text-muted">Context</span>
-        <button type="button" onClick={onEdit} className="font-mono text-[11px] text-accent2 hover:text-white">Edit settings →</button>
-      </div>
-      <div className="flex flex-wrap gap-x-5 gap-y-3">
-        {[['nowOn', 'Date & time'], ['locOn', 'Location'], ['userOn', 'Personal context']].map(([key, label]) => (
-          <label key={key} className="flex items-center gap-2 text-xs cursor-pointer">
-            <input type="checkbox" className="settings-toggle" checked={settings[key]} onChange={(e) => setSettings((prev) => ({ ...prev, [key]: e.target.checked }))} />
-            <span>{label}</span>
-          </label>
-        ))}
-      </div>
-    </fieldset>
-  );
-}
-
 function SettingsView({ settings, setSettings, onBack }) {
   const upd = (patch) => setSettings((s) => ({ ...s, ...patch }));
   return (
@@ -1776,32 +1908,11 @@ function SettingsView({ settings, setSettings, onBack }) {
   );
 }
 
-function SessionSidebar({ model }) {
-  if (!model) return null;
-  const row = (label, value) => (
-    <div className="flex justify-between gap-3">
-      <span>{label}</span>
-      <span className="text-[#e8e2d6]">{value}</span>
-    </div>
-  );
-  return (
-    <div className="hidden lg:block w-[220px] shrink-0 border-l border-edge pl-6 py-1">
-      <div className="font-mono text-[10px] tracking-widest text-muted/80 uppercase mb-3">session</div>
-      <div className="font-mono text-[11px] text-muted space-y-2">
-        {row('provider', model.provider)}
-        {row('model', model.id)}
-        {row('ctx window', model.context_window >= 1_000_000
-          ? (model.context_window / 1_000_000) + 'm'
-          : Math.round(model.context_window / 1000) + 'k')}
-        {row('price /1m', '$' + model.input.toFixed(2) + ' / $' + model.output.toFixed(2))}
-      </div>
-    </div>
-  );
-}
-
 function Main({ onLogout }) {
   const [tab, setTab] = useState('ask');
   const [openRequest, setOpenRequest] = useState(null);
+  const workspaceActions = useRef(null);
+  const [workspaceReady, setWorkspaceReady] = useState(false);
   const openConversation = (id) => { setOpenRequest({ id, nonce: crypto.randomUUID() }); setTab('ask'); };
 
   const [navOpen, setNavOpen] = useState(false);
@@ -1851,7 +1962,7 @@ function Main({ onLogout }) {
   return (
     <div className="min-h-screen">
       <header className="sticky top-0 z-10 backdrop-blur bg-ink/85 border-b border-edge">
-        <div className="max-w-4xl mx-auto px-5 h-14 flex items-center gap-2">
+        <div className="max-w-6xl mx-auto px-5 h-14 flex items-center gap-2">
           <div className="font-mono font-bold text-[15px]">
             brief_ai<span className="text-accent glow">$</span>
           </div>
@@ -1861,6 +1972,8 @@ function Main({ onLogout }) {
             {tabBtn('shared', 'shared')}
             {tabBtn('settings', 'settings')}
           </nav>
+          <button type="button" className="header-new-conversation" title="New conversation" aria-label="New conversation" disabled={!workspaceReady} onClick={() => { setTab('ask'); workspaceActions.current?.newConversation(); }}>+</button>
+          <button type="button" className="header-close-conversation" title="Close current conversation view" aria-label="Close conversation" disabled={!workspaceReady} onClick={() => { setTab('ask'); workspaceActions.current?.close(); }}>×</button>
           <button
             onClick={logout}
             className="hidden sm:block ml-auto font-mono text-xs text-muted hover:text-white transition-colors"
@@ -1890,16 +2003,14 @@ function Main({ onLogout }) {
         )}
       </header>
 
-      <main className="max-w-4xl mx-auto px-5 py-6">
+      <main className="max-w-6xl mx-auto px-5 py-6">
         {models.length > 0 && (
           <div className={tab === 'ask' ? 'flex gap-8 items-start' : 'hidden'}>
             <div className="flex-1 min-w-0">
               <ConversationWorkspace models={models} defaultModel={defaultModel || models[0].id} rate={rate}
-                imageLimits={imageLimits} settings={settings} setSettings={setSettings}
-                onEditSettings={() => { window.dispatchEvent(new Event('briefai:before-navigation')); setTab('settings'); }} onUnauth={unauth} visible={tab === 'ask'}
-                openRequest={openRequest} onModelChange={setModel} />
+                imageLimits={imageLimits} settings={settings} onUnauth={unauth} visible={tab === 'ask'}
+                openRequest={openRequest} actionsRef={workspaceActions} onReady={setWorkspaceReady} onModelChange={setModel} />
             </div>
-            <SessionSidebar model={currentModel} />
           </div>
         )}
         {tab === 'history' && <><ConversationHistory onOpen={openConversation} onUnauth={unauth} /><HistoryView key="history" rate={rate} onUnauth={unauth} /></>}

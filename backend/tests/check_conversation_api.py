@@ -30,7 +30,7 @@ def check_api():
         answer_started, answer_release = threading.Event(), threading.Event()
         block = False
 
-        def fake(model, prompt, depth, images=None, messages=None):
+        def fake(model, prompt, depth, images=None, messages=None, **kwargs):
             calls.append((model, messages))
             if block:
                 answer_started.set()
@@ -81,13 +81,13 @@ def check_api():
         assert public.status_code == 200
         assert public.json['prompt'] == 'A'
         assert public.json['answer'] == 'B'
-        assert 'context' not in public.json and 'messages' not in public.json
-        assert public.json['images'] == []
+        assert 'context' not in public.json and len(public.json['messages']) == 2
+        assert len(public.json['images']) == 1
         assert len(client().get('/api/conversation-shares').json['items']) == 1
         mid = state['messages'][0]['id']
         assert state['messages'][0]['images']
         image_sha = state['messages'][0]['images'][0]['sha']
-        assert api.app.test_client().get('/api/share/' + token + '/images/' + image_sha).status_code == 404
+        assert api.app.test_client().get('/api/share/' + token + '/images/' + image_sha).status_code == 200
         assert client().patch('/api/conversation-messages/' + assistant_id + '/share', json={'show_images': True}).status_code == 200
         assert api.app.test_client().get('/api/share/' + token + '/images/' + image_sha).status_code == 200
         assert api.app.test_client().get('/api/share/' + token + '/images/' + '0' * 64).status_code == 404
@@ -104,6 +104,15 @@ def check_api():
         assert worker.run_one(api)
         assert [m['role'] for m in calls[-1][1]] == ['user', 'assistant', 'user']
         assert calls[-1][1][0]['content'][0]['type'] == 'image'
+        from conversation_titles import run_title
+        assert run_title(api)
+        titled = client().get('/api/conversations/' + cid).json
+        assert titled['title'] == 'B'
+        assert titled['title_status'] == 'completed'
+        assert titled['title_model'] == 'gemini-3.1-flash-lite'
+        assert titled['title_input_tokens'] == 10
+        assert titled['title_cost_usd'] > 0
+        assert not run_title(api)
         state = client().get('/api/conversations/' + cid).json
         assert len(state['messages']) == 4
         follow_mid = state['messages'][2]['id']
@@ -175,6 +184,27 @@ def check_api():
             assert cur.fetchone()['count'] == 0
         assert len(client().get('/api/conversations').json['items']) == 4
         assert client().get('/api/conversations?q=does-not-exist').json['items'] == []
+        # Title failures leave the answer readable and are not retried automatically.
+        api.call_gemini = failing
+        assert run_title(api)
+        assert client().get('/api/conversations/' + interrupted['id']).json['title_status'] == 'failed'
+        from conversation_titles import recover_titles
+        with database(api) as cur:
+            cur.execute("UPDATE conversations SET title_status = 'running' WHERE id = %s", (interrupted['id'],))
+        recover_titles(api)
+        assert client().get('/api/conversations/' + interrupted['id']).json['title_status'] == 'failed'
+        assert len(client().get('/api/conversations/' + interrupted['id']).json['messages']) == 2
+
+        # Deleting during title generation must never recreate a conversation.
+        title_target = failed['id']
+        question_id = client().get('/api/conversations/' + title_target).json['messages'][0]['id']
+        def deleting_title(*args, **kwargs):
+            assert client().delete('/api/conversations/' + title_target + '/messages/' + question_id).status_code == 200
+            return dict(answer='Deleted title', input_tokens=1, output_tokens=1, served='gemini-3.1-flash-lite')
+        api.call_gemini = deleting_title
+        assert run_title(api)
+        assert client().get('/api/conversations/' + title_target).status_code == 404
+        api.call_gemini = fake
         print('PASS: API auth, idempotency, concurrent sends, refresh state, provider switching, images, truncation, live worker locking, interrupted recovery and legacy history')
     finally:
         if original_options is None:

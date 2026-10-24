@@ -13,8 +13,10 @@ persistent session, so you log in once and stay in across tabs.
 ## Features
 
 - Automatically saved conversations with follow-ups, per-message timestamps and model switching.
+- Independent branches from any assistant answer, retaining the preceding conversation and attachments.
 - Multiple open conversations per browser tab, with independent drafts, images, model selections and scroll positions.
 - Local draft recovery after refresh, instant switching between cached conversations and background reply indicators.
+- Automatic conversation titles, adjacent navigation, touch/trackpad gestures and directional slide transitions.
 - Background generation survives a browser refresh; interrupted worker jobs can be retried explicitly.
 - Delete a user message and all later replies, or delete the first message to remove the conversation.
 - Command Deck interface with matching Settings panels and a Shared tab for active public links.
@@ -29,12 +31,13 @@ persistent session, so you log in once and stay in across tabs.
 - Attach multiple images to a prompt (drag & drop, paste, or the file picker) on cloud models -
   up to 20 images, 10MB per image, 24MB total per prompt. Limits are enforced both in the
   browser and on the server. Attachments are stored and shown again in History.
-- Publish from the answer or History with independent question/image visibility controls,
-  editable settings, and revocable links. Public pages include Open Graph metadata and
-  request no indexing; personal settings and diagnostics remain private.
+- Share immutable snapshots of one answer, a question/answer pair, or the conversation up
+  to an answer. Included messages retain their attachments. Deleting an included source
+  revokes its link; later follow-ups stay private. Legacy standalone links remain supported.
+  Public pages include Open Graph metadata and request no indexing; Settings and diagnostics remain private.
 - Full-size attachment gallery in the composer, History, and shared answers, with zoom,
   original-image download, keyboard navigation, and mobile swipe.
-- Optional prompt context (date, location, personal data) toggled in Settings and stored in the
+- Optional prompt context (date, location, personal data) configured exclusively in Settings and stored in the
   browser. It's stored in its own database column, never glued into the prompt, so History shows
   the question you actually asked and the personal bits stay separable.
 - Live cost estimate (input only - text + attached images) from the prompt before sending.

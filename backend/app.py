@@ -508,6 +508,9 @@ def delete_orphan_images(cur, shas):
              )
              AND NOT EXISTS (
                  SELECT 1 FROM conversation_message_images WHERE image_sha = images.sha256
+             )
+             AND NOT EXISTS (
+                 SELECT 1 FROM conversation_share_images WHERE image_sha = images.sha256
              )""",
         (list(shas),),
     )
@@ -554,7 +557,7 @@ def require_auth(view):
     return wrapper
 
 
-def call_anthropic(model, prompt, depth, images=None, messages=None):
+def call_anthropic(model, prompt, depth, images=None, messages=None, output_limit=None, system_prompt=None):
     if anthropic_client is None:
         raise RuntimeError("ANTHROPIC_API_KEY is not configured")
     cfg = MODELS[model]
@@ -567,8 +570,8 @@ def call_anthropic(model, prompt, depth, images=None, messages=None):
     content.append({"type": "text", "text": prompt})
     kwargs = dict(
         model=model,
-        max_tokens=MAX_TOKENS,
-        system=SYSTEM_PROMPT,
+        max_tokens=output_limit or MAX_TOKENS,
+        system=system_prompt if system_prompt is not None else SYSTEM_PROMPT,
         messages=messages if messages is not None else [{"role": "user", "content": content}],
     )
     reasoning = cfg.get("reasoning", {}).get(depth)
@@ -610,11 +613,11 @@ def call_anthropic(model, prompt, depth, images=None, messages=None):
 
 
 
-def call_gemini(model, prompt, depth, images=None, messages=None):
+def call_gemini(model, prompt, depth, images=None, messages=None, output_limit=None, system_prompt=None):
     if gemini_client is None:
         raise RuntimeError("GEMINI_API_KEY is not configured")
 
-    config_args = dict(system_instruction=SYSTEM_PROMPT, max_output_tokens=MAX_TOKENS)
+    config_args = dict(system_instruction=system_prompt if system_prompt is not None else SYSTEM_PROMPT, max_output_tokens=output_limit or MAX_TOKENS)
     reasoning = MODELS[model].get("reasoning", {}).get(depth)
     if reasoning:
         try:
@@ -661,7 +664,7 @@ def call_gemini(model, prompt, depth, images=None, messages=None):
     }
 
 
-def call_openai(model, prompt, depth, images=None, messages=None):
+def call_openai(model, prompt, depth, images=None, messages=None, output_limit=None, system_prompt=None):
     if openai_client is None:
         raise RuntimeError("OPENAI_API_KEY is not configured")
 
@@ -673,8 +676,8 @@ def call_openai(model, prompt, depth, images=None, messages=None):
 
     kwargs = dict(
         model=model,
-        max_completion_tokens=MAX_TOKENS,
-        messages=[{"role": "system", "content": SYSTEM_PROMPT}] + (
+        max_completion_tokens=output_limit or MAX_TOKENS,
+        messages=[{"role": "system", "content": system_prompt if system_prompt is not None else SYSTEM_PROMPT}] + (
             messages if messages is not None else [{"role": "user", "content": user_content}]
         ),
     )
@@ -1202,7 +1205,9 @@ def local_api():
 
 from conversations import register_routes
 from conversation_sharing import register_sharing
+from conversation_branches import register_branches
 register_routes(app, sys.modules[__name__])
 register_sharing(app, sys.modules[__name__])
+register_branches(app, sys.modules[__name__])
 
 init_db()

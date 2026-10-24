@@ -123,7 +123,7 @@ def check_ui():
             # Sharing the current answer keeps the existing explicit publish action.
             page.get_by_role('button', name='Publish link', exact=True).click()
             expect(page.get_by_label('Public link')).to_be_visible()
-            assert shares and shares[0]['show_images'] is False
+            assert shares and shares[0]['scope'] == 'conversation'
             page.get_by_role('button', name='Close dialog').click()
             page.get_by_role('button', name='Delete message and later replies').last.click()
             expect(page.get_by_role('dialog')).to_be_visible()
@@ -134,12 +134,16 @@ def check_ui():
             page.get_by_role('button', name='history', exact=True).click()
             page.get_by_role('button', name='First question').click()
             expect(active.get_by_text('Answer 1', exact=True)).to_be_visible()
-            page.get_by_role('button', name='+ New conversation', exact=True).click()
+            page.get_by_role('button', name='New conversation', exact=True).click()
             expect(active.get_by_placeholder('Ask anything…')).to_be_visible()
             expect(active.get_by_text('Answer 1', exact=True)).to_have_count(0)
             # Recover a submission acknowledged by the server before the browser stored its ID.
-            page.evaluate("""id => { sessionStorage.clear(); sessionStorage.setItem('briefai_pending_request', id); }""", first_request)
-            page.reload()
+            page = browser.new_page(viewport={'width': 1280, 'height': 1000})
+            page.add_init_script("sessionStorage.setItem('briefai_pending_request', " + json.dumps(first_request) + ");")
+            page.route('**/api/**', route_api)
+            page.on('pageerror', lambda error: errors.append(str(error)))
+            page.goto(f'http://127.0.0.1:{server.server_port}')
+            active = page.locator('[data-conversation-view]:not([hidden])')
             expect(active.get_by_text('Answer 1', exact=True)).to_be_visible()
             page.set_viewport_size({'width': 390, 'height': 844})
             page.screenshot(path='/private/tmp/brief-conversation-mobile.png', full_page=True)

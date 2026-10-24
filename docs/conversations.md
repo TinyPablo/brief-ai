@@ -59,8 +59,8 @@ rejected. History is never silently truncated. The API limits user messages to
 100,000 characters, follow-up histories to 500,000 stored characters and 100
 messages; provider context limits may be lower.
 
-Titles remain unset at this stage. Navigation uses the first question as a
-preview; automatic title generation is a separate change.
+Titles are generated asynchronously after the first successful answer. Until a
+title is available, navigation uses a first-question preview.
 
 ## Local verification
 
@@ -125,18 +125,104 @@ When browser storage is unavailable or full, views continue to work in memory
 and display a persistence warning. The user can continue sending messages;
 unsent changes may not survive refresh in that state.
 
-Navigation currently uses adjacent first-question previews and simple arrows.
-Generated titles, touch gestures and animated transitions are separate changes.
+Navigation shows an arrow and the adjacent conversation's title, without a
+central heading or tab strip. At narrow widths, adjacent links move above the
+conversation. Horizontal touch swipes and trackpad gestures navigate one view
+per gesture. Vertical scrolling, pinch zoom, text selection, editors, links,
+buttons, code blocks and open dialogs keep their own interactions. View changes
+use directional slide transitions; reduced-motion preferences disable them.
+The interface is displayed at 120% of its earlier scale.
 
-Individual assistant answers retain public sharing. A link exposes only that
-answer and, optionally, its immediate user question and images. Earlier turns,
-Settings context and diagnostics are never included. Deleting a shared answer
-through truncation revokes its link. The Shared tab lists both conversation
-answers and earlier standalone links.
+The main composer does not contain context controls. Date/time, location and
+personal context are configured in Settings and are captured when a conversation
+starts. The session diagnostics panel is not displayed.
+
+## Automatic titles
+
+The answer is committed before title generation. A separate durable title state
+on `conversations` (`waiting`, `queued`, `running`, `completed`, `failed`) lets a
+worker generate a title without delaying answer delivery. Browser polling
+continues while the title is pending. Normal answer jobs take priority over title
+jobs.
+
+The title request contains at most 2,000 characters of the first question and
+2,000 characters of its answer. It excludes Settings context and attachments.
+It requests a short title in the question's language. Cloud titles use a small
+model from the first answer's provider: Haiku 4.5, Gemini 3.1 Flash Lite, or GPT-5.4
+Nano. Local conversations use their local model. The title is stored once and
+is not regenerated on follow-ups.
+
+Title generation is an additional model request. Its served model, input/output
+tokens and cost are stored separately in `title_model`, `title_input_tokens`,
+`title_output_tokens` and `title_cost_usd`. Per-answer costs exclude that metadata
+request. If it fails or returns an unsuitable title, navigation keeps the question
+preview. Interrupted title requests become failed, without automatic paid retries.
+Deleting a conversation during title generation discards the title result.
+
+The migration adds title state and usage columns to `conversations`. Existing
+conversations are not batch-processed for titles; a later successful follow-up
+can queue a missing title. Legacy standalone history remains unchanged.
+
+## Branches
+
+The Branch action on any assistant message creates an independent conversation
+containing all messages and attachments up to and including that answer. The
+source conversation remains unchanged. The copy opens immediately to its right.
+The `POST /api/conversations/<id>/branches` body contains `message_id` and a
+client-generated UUID `request_id`; retries return the same branch. Reusing an
+ID for a different source returns HTTP 409.
+
+Messages receive new IDs while keeping their content, timestamps, model and
+original usage metadata. Copied rows have `inherited = true` and do not represent
+new provider requests. Future branch replies have `inherited = false`.
+Attachment associations are copied, while image bytes remain deduplicated.
+Settings context is copied into the independent conversation. Source IDs are
+retained as provenance without foreign keys, so deleting the source cannot
+remove the branch. A branch with an existing title receives a short branch suffix.
+
+## Public snapshots
+
+Share offers three scopes: `answer` (only the selected answer), `exchange`
+(the immediate question and answer), and `conversation` (all messages through
+the selected answer). The default is `conversation`. Attachments belonging to
+included messages are always included; no separate image checkbox is shown.
+Settings context, diagnostics and usage/cost fields are excluded.
+
+Publishing stores an immutable JSON snapshot and references to the included
+source messages and images. Later follow-ups do not change it. Update snapshot
+explicitly replaces its contents under the same URL. Stop sharing revokes it.
+The Shared tab lists active links, and public pages render the stored messages
+as a conversation.
+
+Deleting any included source message revokes the entire snapshot. Deleting a
+later message outside the snapshot leaves its link active. Deleting a source
+conversation revokes its links but leaves branch conversations and their links
+independent. Postgres deletion triggers invalidate snapshots even when source
+messages are removed outside the API. Image authorization checks the snapshot's
+own attachment references, so a token cannot retrieve other conversation images.
 
 `GET /api/conversation-requests/<request_id>` recovers the conversation created
 by a submission. Sharing settings use `/api/conversation-messages/<message_id>`
-and its `/share` subroute, and `/api/conversation-shares` lists active links.
+and its `/share` subroute. POST/PATCH accept `{ "scope": "conversation" }`,
+`{ "scope": "exchange" }`, or `{ "scope": "answer" }`.
+`/api/conversation-shares` lists active links. Older single-answer links and
+legacy standalone sharing remain readable; updating a conversation link creates
+a snapshot. Existing older-client question visibility flags remain accepted,
+while attachments always follow included messages in new snapshots.
+
+## Composer controls
+
+New and Close are always visible in the sticky application header. Close removes
+only the open view and asks before discarding a draft. A completely empty view
+is removed automatically when another view or another application section is
+selected; a view with text, attachments or a pending submission is kept.
+Clicking New while already in an empty view gives a short scale acknowledgement.
+
+Transitions clip both panes at the chat boundaries, with synchronized slide and
+fade animations. The outgoing clipping window remains stationary, preventing the
+old pane from covering the incoming pane or crossing the side navigation.
+Reduced-motion preferences disable these animations. The session diagnostics
+panel has been removed from the interface, including Settings.
 
 An optional browser check requires Playwright and Chrome and uses fake API
 responses without model calls:
@@ -145,6 +231,9 @@ responses without model calls:
 python3 backend/tests/check_conversation_ui.py
 python3 backend/tests/check_session_storage.py
 python3 backend/tests/check_conversation_sessions.py
+python3 backend/tests/check_conversation_navigation.py
+python3 backend/tests/check_conversation_fork_ui.py
+PYTHONPATH=backend python3 backend/tests/check_conversation_forks.py
 ```
 
 The existing `/api/generate` endpoint remains available for older clients.

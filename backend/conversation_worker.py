@@ -110,7 +110,13 @@ def finish(api, job, result=None, duration_ms=0, error=None):
              cost, duration_ms, result['stop_reason'], api.build_reasoning_label(job['model'], api.DEFAULT_DEPTH)),
         )
         cur.execute("UPDATE conversation_jobs SET status = 'completed', finished_at = now() WHERE id = %s", (str(job['id']),))
-        cur.execute('UPDATE conversations SET updated_at = now() WHERE id = %s', (str(job['conversation_id']),))
+        cur.execute(
+            """UPDATE conversations SET updated_at = now(),
+               title_status = CASE WHEN title IS NULL AND title_status = 'waiting'
+                   THEN 'queued' ELSE title_status END,
+               title_model = COALESCE(title_model, %s) WHERE id = %s""",
+            (job['model'], str(job['conversation_id'])),
+        )
 
 
 def run_one(api):
@@ -145,7 +151,9 @@ def work(api):
     while True:
         try:
             recover_interrupted(api)
-            if not run_one(api):
+            from conversation_titles import recover_titles, run_title
+            recover_titles(api)
+            if not run_one(api) and not run_title(api):
                 time.sleep(1)
         except Exception:
             log.exception('Conversation worker iteration failed')
