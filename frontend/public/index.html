@@ -192,22 +192,29 @@
     .copy-btn:hover { color: #fff; border-color: #453b2b; }
 
 
-    .conversation-navigation { position: sticky; top: 56px; z-index: 5; background: #0d0c0a; padding: 8px 0; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: start; gap: 16px; margin-bottom: 24px; }
-    .conversation-navigation button { color: #9c9286; font-family: 'Space Mono', monospace; font-size: 11px; }
+    body { zoom: 1.2; overscroll-behavior-x: contain; }
+    .conversation-workspace { max-width: 1100px; margin: auto; position: relative; }
+    .conversation-stage { max-width: 620px; margin: auto; overflow-x: clip; touch-action: pan-y; }
+    .conversation-navigation { position: sticky; top: 56px; z-index: 5; display: grid; grid-template-columns: minmax(0,1fr) minmax(0,620px) minmax(0,1fr); align-items: center; min-height: 44px; margin-bottom: 16px; }
+    .conversation-navigation button { color: #9c9286; font-family: 'Space Mono', monospace; font-size: 12px; }
     .conversation-navigation button:hover { color: #e6a84a; }
-    .conversation-neighbor { display: flex; align-items: center; gap: 9px; text-align: left; min-height: 32px; max-width: 100%; }
-    .conversation-neighbor.next { margin-left: auto; text-align: right; }
-    .conversation-actions { display: flex; gap: 16px; align-items: center; }
-    .conversation-actions button { min-height: 32px; }
-    .conversation-actions button[aria-label="Close conversation"] { min-width: 32px; }
+    .conversation-navigation > div:first-child { position: absolute; top: 62px; left: 0; width: calc((100% - 620px)/2 - 20px); }
+    .conversation-navigation > div:last-child { position: absolute; top: 62px; right: 0; width: calc((100% - 620px)/2 - 20px); }
+    .conversation-neighbor { display: flex; align-items: center; gap: 10px; text-align: left; min-height: 44px; width: 100%; background: #0d0c0a; }
+    .conversation-neighbor.next { margin-left: auto; justify-content: flex-end; text-align: right; }
+    .conversation-actions { grid-column: 2; display: flex; justify-content: flex-end; gap: 16px; align-items: center; background: #0d0c0a; }
+    .conversation-actions button { min-height: 44px; }
+    .conversation-actions button[aria-label="Close conversation"] { min-width: 44px; }
+    .conversation-transition-layer { position: fixed; inset: 0; z-index: 8; pointer-events: none; overflow: hidden; }
+    .conversation-outgoing { position: absolute; overflow: hidden; background: #0d0c0a; }
     .new-reply-button { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #221e17; color: #e6a84a; border: 1px solid #3a3226; padding: 10px 16px; z-index: 10; font-size: 12px; }
     [data-conversation-view][hidden] { display: none !important; }
-    @media (max-width: 640px) {
-      .conversation-navigation { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
-      .conversation-actions { grid-column: 1 / -1; grid-row: 1; justify-content: flex-end; }
-      .conversation-neighbor, .conversation-actions button { min-height: 44px; }
-      .conversation-actions button[aria-label="Close conversation"] { min-width: 44px; }
-      .conversation-navigation > div:last-child { grid-column: 2; }
+    @media (max-width: 1149px) {
+      .conversation-navigation { max-width: 620px; margin-left: auto; margin-right: auto; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 8px 16px; background: #0d0c0a; }
+      .conversation-actions { grid-column: 1 / -1; grid-row: 1; }
+      .conversation-navigation > div:first-child, .conversation-navigation > div:last-child { position: static; width: auto; }
+      .conversation-navigation > div:first-child { grid-column: 1; grid-row: 2; }
+      .conversation-navigation > div:last-child { grid-column: 2; grid-row: 2; }
     }
   </style>
 </head>
@@ -224,6 +231,7 @@
   <script src="/vendor/marked-katex.js"></script>
 
   <script src="/conversation-sessions.js"></script>
+  <script src="/conversation-navigation.js"></script>
   <script type="text/babel" src="/app.jsx"></script>
 </body>
 </html>

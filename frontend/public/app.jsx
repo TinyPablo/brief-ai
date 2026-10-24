@@ -732,7 +732,7 @@ function TrashIcon() {
   return <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" /></svg>;
 }
 
-function ConversationWorkspace({ models, defaultModel, rate, imageLimits, settings, setSettings, onEditSettings, onUnauth, visible, openRequest, onModelChange }) {
+function ConversationWorkspace({ models, defaultModel, rate, imageLimits, settings, onUnauth, visible, openRequest, onModelChange }) {
   const [workspace, setWorkspace] = useState(null);
   const [storageError, setStorageError] = useState(false);
   const [closeKey, setCloseKey] = useState(null);
@@ -740,8 +740,19 @@ function ConversationWorkspace({ models, defaultModel, rate, imageLimits, settin
   const workspaceRef = useRef(null);
   const visibleRef = useRef(visible);
   const positioning = useRef(false);
+  const elementRef = useRef(null);
+  const transitionLayer = useRef(null);
+  const transitions = useRef(null);
   visibleRef.current = visible;
   const publish = useCallback((next) => {
+    const previous = workspaceRef.current;
+    if (previous && previous.active !== next.active && visibleRef.current) {
+      const oldIndex = previous.views.findIndex((view) => view.key === previous.active);
+      const newIndex = previous.views.findIndex((view) => view.key === next.active);
+      const direction = newIndex < 0 || newIndex > oldIndex ? 1 : -1;
+      const outgoing = elementRef.current?.querySelector('[data-conversation-view]:not([hidden])');
+      transitions.current?.capture(outgoing, direction);
+    }
     workspaceRef.current = next;
     setWorkspace(next);
     storageRef.current.setOrder(next.views, next.active);
@@ -857,6 +868,19 @@ function ConversationWorkspace({ models, defaultModel, rate, imageLimits, settin
     return () => { clearTimeout(timer); window.removeEventListener('scroll', onScroll); window.removeEventListener('pagehide', savePosition); window.removeEventListener('briefai:before-navigation', savePosition); };
   }, [updateView]);
 
+  useEffect(() => {
+    if (!workspace || !elementRef.current) return;
+    transitions.current = new BriefNavigation.Transitions(transitionLayer.current);
+    const detach = BriefNavigation.gestures(elementRef.current, () => visibleRef.current, (direction) => {
+      const current = workspaceRef.current;
+      const index = current.views.findIndex((view) => view.key === current.active);
+      const neighbor = current.views[index + direction];
+      if (neighbor) select(neighbor.key);
+    });
+    return () => { detach(); transitions.current?.cancel(); };
+  }, [!!workspace, select]);
+  useEffect(() => { if (!visible) transitions.current?.cancel(); }, [visible]);
+
   const active = workspace?.views.find((v) => v.key === workspace.active);
   const messageCount = active?.conversation?.messages?.length || 0;
   React.useLayoutEffect(() => {
@@ -865,6 +889,7 @@ function ConversationWorkspace({ models, defaultModel, rate, imageLimits, settin
     const frame = requestAnimationFrame(() => {
       const target = active.atBottom && messageCount ? document.documentElement.scrollHeight : active.scroll;
       window.scrollTo(0, target);
+      transitions.current?.play(elementRef.current?.querySelector('[data-conversation-view]:not([hidden])'));
       if (active.atBottom && active.unread) updateView(active.key, { unread: false });
       requestAnimationFrame(() => { positioning.current = false; });
     });
@@ -891,21 +916,23 @@ function ConversationWorkspace({ models, defaultModel, rate, imageLimits, settin
     if (active.prompt || active.images.length || active.pendingRequest) setCloseKey(active.key);
     else remove(active.key);
   };
-  return <div className="conversation-workspace">
+  return <div className="conversation-workspace" ref={elementRef}>
     {storageError && <p role="alert" className="text-sm text-bad mb-4">Draft changes could not be saved locally. Keep this tab open to retain them.</p>}
     <nav aria-label="Open conversations" className="conversation-navigation">
       <div>{previous && <button type="button" className="conversation-neighbor" aria-label={'Previous conversation: ' + label(previous)} onClick={() => select(previous.key)}><span aria-hidden="true">←</span><span className="min-w-0 break-words">{label(previous)}{status(previous) && <small className="block text-accent2">{status(previous)}</small>}</span></button>}</div>
       <div className="conversation-actions"><button type="button" onClick={newConversation}>+ New conversation</button><button type="button" aria-label="Close conversation" title="Close conversation" onClick={requestClose}>×</button></div>
       <div>{next && <button type="button" className="conversation-neighbor next" aria-label={'Next conversation: ' + label(next)} onClick={() => select(next.key)}><span className="min-w-0 break-words">{label(next)}{status(next) && <small className="block text-accent2">{status(next)}</small>}</span><span aria-hidden="true">→</span></button>}</div>
     </nav>
+    <div className="conversation-stage">
     {workspace.views.map((view) => <div key={view.key} data-conversation-view={view.key} data-conversation-id={view.conversationId || ''} hidden={view.key !== workspace.active}>
-      {!view.conversationId && <ContextControls settings={settings} setSettings={setSettings} onEdit={onEditSettings} />}
       <AskView models={models} model={view.model || defaultModel} setModel={(model) => updateView(view.key, { model })}
         rate={rate} imageLimits={imageLimits} settings={settings} onUnauth={onUnauth}
         conversationId={view.conversationId} onConversationChange={changeConversation}
         viewKey={view.key} viewState={view} onViewState={updateView} active={visible && view.key === workspace.active}
         onDeleted={remove} />
     </div>)}
+    </div>
+    <div ref={transitionLayer} className="conversation-transition-layer" aria-hidden="true" />
     {active.unread && <button type="button" className="new-reply-button" onClick={() => { window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' }); updateView(active.key, { atBottom: true, unread: false }); }}>New reply ↓</button>}
     {closeKey && <Modal title="Discard draft?" onClose={() => setCloseKey(null)}><p className="text-sm text-muted">Closing this view discards its unsent text and attachments. Sent messages remain in History.</p><div className="flex gap-3 mt-6"><button type="button" className="deck-button" onClick={() => setCloseKey(null)}>Keep open</button><button type="button" className="deck-button danger" onClick={() => remove(closeKey)}>Discard and close</button></div></Modal>}
   </div>;
@@ -980,7 +1007,7 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
         }
         setRestoring(false);
         setError('');
-        if (['queued', 'running'].includes(data.job?.status)) timer = setTimeout(poll, 1200);
+        if (['queued', 'running'].includes(data.job?.status) || ['queued', 'running'].includes(data.title_status)) timer = setTimeout(poll, 1200);
       } catch (e) {
         if (!cancelled) { setError('Connection lost. Reconnecting…'); timer = setTimeout(poll, 3000); }
       }
@@ -1718,27 +1745,7 @@ function HistoryView({ rate, onUnauth, sharedOnly = false }) {
   );
 }
 
-function ContextControls({ settings, setSettings, onEdit }) {
-  return (
-    <fieldset className="border border-edge bg-panel px-4 py-3 mb-4">
-      <legend className="sr-only">Prompt context</legend>
-      <div className="flex items-center justify-between gap-3 mb-3">
-        <span className="font-mono text-[10px] uppercase tracking-widest text-muted">Context</span>
-        <button type="button" onClick={onEdit} className="font-mono text-[11px] text-accent2 hover:text-white">Edit settings →</button>
-      </div>
-      <div className="flex flex-wrap gap-x-5 gap-y-3">
-        {[['nowOn', 'Date & time'], ['locOn', 'Location'], ['userOn', 'Personal context']].map(([key, label]) => (
-          <label key={key} className="flex items-center gap-2 text-xs cursor-pointer">
-            <input type="checkbox" className="settings-toggle" checked={settings[key]} onChange={(e) => setSettings((prev) => ({ ...prev, [key]: e.target.checked }))} />
-            <span>{label}</span>
-          </label>
-        ))}
-      </div>
-    </fieldset>
-  );
-}
-
-function SettingsView({ settings, setSettings, onBack }) {
+function SettingsView({ settings, setSettings, onBack, model }) {
   const upd = (patch) => setSettings((s) => ({ ...s, ...patch }));
   return (
     <div className="space-y-5 fade-in max-w-2xl">
@@ -1771,12 +1778,13 @@ function SettingsView({ settings, setSettings, onBack }) {
         <p className="mt-3 mb-3">Preferences and background you want the model to consider.</p>
         <textarea aria-label="Personal context" value={settings.userText} onChange={(e) => upd({ userText: e.target.value })} disabled={!settings.userOn} rows={4} placeholder="e.g. preferred language, interests, or dietary preferences" className="deck-input w-full resize-y disabled:opacity-40" />
       </section>
+      <SessionSidebar model={model} inSettings />
       <p className="font-mono text-[10px] text-muted">These settings are saved in this browser and sent only when enabled.</p>
     </div>
   );
 }
 
-function SessionSidebar({ model }) {
+function SessionSidebar({ model, inSettings = false }) {
   if (!model) return null;
   const row = (label, value) => (
     <div className="flex justify-between gap-3">
@@ -1785,7 +1793,7 @@ function SessionSidebar({ model }) {
     </div>
   );
   return (
-    <div className="hidden lg:block w-[220px] shrink-0 border-l border-edge pl-6 py-1">
+    <div className={inSettings ? "corner-panel border border-edge bg-panel p-4" : "hidden lg:block w-[220px] shrink-0 border-l border-edge pl-6 py-1"}>
       <div className="font-mono text-[10px] tracking-widest text-muted/80 uppercase mb-3">session</div>
       <div className="font-mono text-[11px] text-muted space-y-2">
         {row('provider', model.provider)}
@@ -1851,7 +1859,7 @@ function Main({ onLogout }) {
   return (
     <div className="min-h-screen">
       <header className="sticky top-0 z-10 backdrop-blur bg-ink/85 border-b border-edge">
-        <div className="max-w-4xl mx-auto px-5 h-14 flex items-center gap-2">
+        <div className="max-w-6xl mx-auto px-5 h-14 flex items-center gap-2">
           <div className="font-mono font-bold text-[15px]">
             brief_ai<span className="text-accent glow">$</span>
           </div>
@@ -1890,21 +1898,19 @@ function Main({ onLogout }) {
         )}
       </header>
 
-      <main className="max-w-4xl mx-auto px-5 py-6">
+      <main className="max-w-6xl mx-auto px-5 py-6">
         {models.length > 0 && (
           <div className={tab === 'ask' ? 'flex gap-8 items-start' : 'hidden'}>
             <div className="flex-1 min-w-0">
               <ConversationWorkspace models={models} defaultModel={defaultModel || models[0].id} rate={rate}
-                imageLimits={imageLimits} settings={settings} setSettings={setSettings}
-                onEditSettings={() => { window.dispatchEvent(new Event('briefai:before-navigation')); setTab('settings'); }} onUnauth={unauth} visible={tab === 'ask'}
+                imageLimits={imageLimits} settings={settings} onUnauth={unauth} visible={tab === 'ask'}
                 openRequest={openRequest} onModelChange={setModel} />
             </div>
-            <SessionSidebar model={currentModel} />
           </div>
         )}
         {tab === 'history' && <><ConversationHistory onOpen={openConversation} onUnauth={unauth} /><HistoryView key="history" rate={rate} onUnauth={unauth} /></>}
         {tab === 'shared' && <><ConversationSharedAnswers onUnauth={unauth} onOpen={openConversation} /><HistoryView key="shared" rate={rate} onUnauth={unauth} sharedOnly /></>}
-        {tab === 'settings' && <SettingsView settings={settings} setSettings={setSettings} onBack={() => setTab('ask')} />}
+        {tab === 'settings' && <SettingsView model={currentModel} settings={settings} setSettings={setSettings} onBack={() => setTab('ask')} />}
       </main>
     </div>
   );
