@@ -732,24 +732,209 @@ function TrashIcon() {
   return <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" /></svg>;
 }
 
-function AskView({ models, model, setModel, rate, imageLimits, settings, onUnauth, conversationId, onConversationChange }) {
+function ConversationWorkspace({ models, defaultModel, rate, imageLimits, settings, setSettings, onEditSettings, onUnauth, visible, openRequest, onModelChange }) {
+  const [workspace, setWorkspace] = useState(null);
+  const [storageError, setStorageError] = useState(false);
+  const [closeKey, setCloseKey] = useState(null);
+  const storageRef = useRef(null);
+  const workspaceRef = useRef(null);
+  const visibleRef = useRef(visible);
+  const positioning = useRef(false);
+  visibleRef.current = visible;
+  const publish = useCallback((next) => {
+    workspaceRef.current = next;
+    setWorkspace(next);
+    storageRef.current.setOrder(next.views, next.active);
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    const storage = new BriefSessions.WorkspaceStorage(() => setStorageError(true));
+    storageRef.current = storage;
+    storage.restore().then((value) => {
+      if (cancelled) return;
+      for (const view of value.views) {
+        if (!view.model) view.model = defaultModel;
+        storage.save(view).catch(() => {});
+      }
+      publish(value);
+    });
+    return () => { cancelled = true; workspaceRef.current = null; storage.dispose(); };
+  }, []);
+
+  const updateView = useCallback((key, patch) => {
+    const current = workspaceRef.current;
+    if (!current) return Promise.resolve();
+    const view = current.views.find((item) => item.key === key);
+    if (!view || Object.keys(patch).every((name) => view[name] === patch[name])) return Promise.resolve();
+    const updated = { ...view, ...patch };
+    publish({ ...current, views: current.views.map((item) => item.key === key ? updated : item) });
+    return storageRef.current.save(updated).catch(() => {});
+  }, [publish]);
+
+  const rememberPosition = useCallback(() => {
+    const current = workspaceRef.current;
+    if (!current || !visibleRef.current || positioning.current) return current;
+    const view = current.views.find((v) => v.key === current.active);
+    const atBottom = document.documentElement.scrollHeight - innerHeight - scrollY < 80;
+    const updated = { ...view, scroll: scrollY, atBottom, unread: atBottom ? false : view.unread };
+    storageRef.current.save(updated).catch(() => {});
+    const next = { ...current, views: current.views.map((v) => v.key === updated.key ? updated : v) };
+    workspaceRef.current = next;
+    return next;
+  }, []);
+  const select = useCallback((key) => {
+    const current = rememberPosition();
+    if (!current || current.active === key) return;
+    publish({ ...current, active: key });
+  }, [publish, rememberPosition]);
+
+  const insert = useCallback((view) => {
+    const current = rememberPosition();
+    const views = [...current.views];
+    views.splice(views.findIndex((v) => v.key === current.active) + 1, 0, view);
+    storageRef.current.save(view).catch(() => {});
+    publish({ views, active: view.key });
+  }, [publish, rememberPosition]);
+
+  const newConversation = useCallback(() => {
+    const current = workspaceRef.current;
+    const empty = current.views.find((v) => !v.conversationId && !v.prompt && !v.images.length && !v.pendingRequest);
+    if (empty) select(empty.key);
+    else insert(BriefSessions.freshView(null, defaultModel));
+  }, [defaultModel, insert, select]);
+
+  const remove = useCallback((key) => {
+    const current = workspaceRef.current;
+    if (!current) return;
+    const index = current.views.findIndex((v) => v.key === key);
+    const views = current.views.filter((v) => v.key !== key);
+    let active = current.active;
+    if (!views.length) {
+      views.push(BriefSessions.freshView(null, defaultModel));
+      storageRef.current.save(views[0]).catch(() => {});
+    }
+    if (active === key) active = views[Math.min(index, views.length - 1)].key;
+    publish({ views, active });
+    storageRef.current.remove(key).catch(() => {});
+    setCloseKey(null);
+  }, [defaultModel, publish]);
+
+  const changeConversation = useCallback((key, id) => {
+    if (!id) { remove(key); return; }
+    const current = workspaceRef.current;
+    if (!current?.views.some((view) => view.key === key)) return;
+    const existing = current.views.find((view) => view.key !== key && view.conversationId === id);
+    if (existing) {
+      const wasActive = current.active === key;
+      remove(key);
+      if (wasActive) select(existing.key);
+      return;
+    }
+    updateView(key, { conversationId: id });
+  }, [remove, select, updateView]);
+
+  useEffect(() => {
+    if (!workspace || !openRequest) return;
+    const current = workspaceRef.current;
+    const existing = current.views.find((view) => view.conversationId === openRequest.id);
+    if (existing) select(existing.key);
+    else insert(BriefSessions.freshView(openRequest.id));
+  }, [openRequest, !!workspace, defaultModel, insert, select]);
+
+  useEffect(() => {
+    let timer;
+    const savePosition = () => {
+      if (positioning.current || !visibleRef.current || !workspaceRef.current) return;
+      const current = workspaceRef.current;
+      const atBottom = document.documentElement.scrollHeight - innerHeight - scrollY < 80;
+      const view = current.views.find((v) => v.key === current.active);
+      updateView(current.active, { scroll: scrollY, atBottom, unread: atBottom ? false : view.unread });
+    };
+    const onScroll = () => { clearTimeout(timer); timer = setTimeout(savePosition, 100); };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('pagehide', savePosition);
+    window.addEventListener('briefai:before-navigation', savePosition);
+    return () => { clearTimeout(timer); window.removeEventListener('scroll', onScroll); window.removeEventListener('pagehide', savePosition); window.removeEventListener('briefai:before-navigation', savePosition); };
+  }, [updateView]);
+
+  const active = workspace?.views.find((v) => v.key === workspace.active);
+  const messageCount = active?.conversation?.messages?.length || 0;
+  React.useLayoutEffect(() => {
+    if (!visible || !active) return;
+    positioning.current = true;
+    const frame = requestAnimationFrame(() => {
+      const target = active.atBottom && messageCount ? document.documentElement.scrollHeight : active.scroll;
+      window.scrollTo(0, target);
+      if (active.atBottom && active.unread) updateView(active.key, { unread: false });
+      requestAnimationFrame(() => { positioning.current = false; });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [workspace?.active, visible, messageCount]);
+
+  useEffect(() => { if (active) onModelChange(active.model || defaultModel); }, [active?.model, defaultModel, onModelChange]);
+  // Refresh the lifetime of an open session without persisting its contents again.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const current = workspaceRef.current;
+      if (current) storageRef.current.save(current.views[0]).catch(() => {});
+    }, 60000);
+    return () => clearInterval(timer);
+  }, []);
+
+  if (!workspace) return <p role="status" className="text-sm text-muted">Restoring workspace…</p>;
+  const index = workspace.views.findIndex((v) => v.key === workspace.active);
+  const previous = workspace.views[index - 1];
+  const next = workspace.views[index + 1];
+  const label = (view) => view.conversation?.title || view.conversation?.messages?.find((m) => m.role === 'user')?.content?.slice(0, 55) || view.prompt.slice(0, 55) || 'New conversation';
+  const status = (view) => view.unread ? 'New reply' : ['queued', 'running'].includes(view.conversation?.job?.status) ? 'Generating…' : null;
+  const requestClose = () => {
+    if (active.prompt || active.images.length || active.pendingRequest) setCloseKey(active.key);
+    else remove(active.key);
+  };
+  return <div className="conversation-workspace">
+    {storageError && <p role="alert" className="text-sm text-bad mb-4">Draft changes could not be saved locally. Keep this tab open to retain them.</p>}
+    <nav aria-label="Open conversations" className="conversation-navigation">
+      <div>{previous && <button type="button" className="conversation-neighbor" aria-label={'Previous conversation: ' + label(previous)} onClick={() => select(previous.key)}><span aria-hidden="true">←</span><span className="min-w-0 break-words">{label(previous)}{status(previous) && <small className="block text-accent2">{status(previous)}</small>}</span></button>}</div>
+      <div className="conversation-actions"><button type="button" onClick={newConversation}>+ New conversation</button><button type="button" aria-label="Close conversation" title="Close conversation" onClick={requestClose}>×</button></div>
+      <div>{next && <button type="button" className="conversation-neighbor next" aria-label={'Next conversation: ' + label(next)} onClick={() => select(next.key)}><span className="min-w-0 break-words">{label(next)}{status(next) && <small className="block text-accent2">{status(next)}</small>}</span><span aria-hidden="true">→</span></button>}</div>
+    </nav>
+    {workspace.views.map((view) => <div key={view.key} data-conversation-view={view.key} data-conversation-id={view.conversationId || ''} hidden={view.key !== workspace.active}>
+      {!view.conversationId && <ContextControls settings={settings} setSettings={setSettings} onEdit={onEditSettings} />}
+      <AskView models={models} model={view.model || defaultModel} setModel={(model) => updateView(view.key, { model })}
+        rate={rate} imageLimits={imageLimits} settings={settings} onUnauth={onUnauth}
+        conversationId={view.conversationId} onConversationChange={changeConversation}
+        viewKey={view.key} viewState={view} onViewState={updateView} active={visible && view.key === workspace.active}
+        onDeleted={remove} />
+    </div>)}
+    {active.unread && <button type="button" className="new-reply-button" onClick={() => { window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' }); updateView(active.key, { atBottom: true, unread: false }); }}>New reply ↓</button>}
+    {closeKey && <Modal title="Discard draft?" onClose={() => setCloseKey(null)}><p className="text-sm text-muted">Closing this view discards its unsent text and attachments. Sent messages remain in History.</p><div className="flex gap-3 mt-6"><button type="button" className="deck-button" onClick={() => setCloseKey(null)}>Keep open</button><button type="button" className="deck-button danger" onClick={() => remove(closeKey)}>Discard and close</button></div></Modal>}
+  </div>;
+}
+
+function AskView({ models, model, setModel, rate, imageLimits, settings, onUnauth, conversationId, onConversationChange, viewKey, viewState, onViewState, active, onDeleted }) {
   const limits = imageLimits || DEFAULT_IMAGE_LIMITS;
   const groups = useMemo(() => groupByProvider(models), [models]);
   const currentModel = models.find((m) => m.id === model) || null;
-  const [prompt, setPrompt] = useState('');
-  const [images, setImages] = useState([]);
+  const [prompt, setPrompt] = useState(viewState.prompt);
+  const [images, setImages] = useState(viewState.images);
   const [imageError, setImageError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [shareMessage, setShareMessage] = useState(null);
-  const [conversation, setConversation] = useState(null);
-  const [restoring, setRestoring] = useState(!!conversationId);
+  const [conversation, setConversation] = useState(viewState.conversation);
+  const [restoring, setRestoring] = useState(!!conversationId && !viewState.conversation);
   const [error, setError] = useState('');
   const [refresh, setRefresh] = useState(0);
   const [deleting, setDeleting] = useState(false);
   const [deleteMessage, setDeleteMessage] = useState(null);
   const [copied, setCopied] = useState(null);
   const fileInputRef = useRef(null);
-  const requestRef = useRef(null);
+  const requestRef = useRef(viewState.pendingRequest ? { id: viewState.pendingRequest.id, body: null } : null);
+  const latestView = useRef({ active, viewState });
+  latestView.current = { active, viewState };
+  const previousConversation = useRef(viewState.conversation);
+  const modelChosen = useRef(!!viewState.model);
+  const changeConversation = useCallback((id) => onConversationChange(viewKey, id), [viewKey, onConversationChange]);
+  useEffect(() => { onViewState(viewKey, { prompt, images, conversation }); }, [viewKey, prompt, images, conversation, onViewState]);
   const unauthRef = useRef(onUnauth);
   unauthRef.current = onUnauth;
   const busy = ['queued', 'running'].includes(conversation?.job?.status);
@@ -759,26 +944,39 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
   useEffect(() => {
     let cancelled = false;
     let timer;
-    setConversation(null);
-    setRestoring(!!conversationId);
-    setPrompt(''); setImages([]); setImageError('');
-    requestRef.current = null;
+    setRestoring(!!conversationId && !previousConversation.current);
     setError('');
-    let firstPoll = true;
     const poll = async () => {
       try {
         const res = await api('/conversations/' + conversationId);
         if (cancelled) return;
         if (res.status === 401) { unauthRef.current(); return; }
-        if (res.status === 404) { onConversationChange(null); return; }
+        if (res.status === 404) {
+          const draft = latestView.current.viewState;
+          if (draft.prompt || draft.images.length) {
+            previousConversation.current = null;
+            requestRef.current = null;
+            setConversation(null); setRestoring(false);
+            onViewState(viewKey, { conversationId: null, conversation: null, pendingRequest: null });
+          } else onDeleted(viewKey);
+          return;
+        }
         if (!res.ok) throw new Error('Could not load this conversation.');
         const data = await res.json();
         if (cancelled) return;
+        const previous = previousConversation.current;
+        const wasPending = ['queued', 'running'].includes(previous?.job?.status) || !!latestView.current.viewState.pendingRequest;
+        const last = data.messages.at(-1);
+        if (wasPending && last?.role === 'assistant' && last.id !== previous?.messages?.at(-1)?.id) {
+          const current = latestView.current;
+          if (!current.active || !current.viewState.atBottom) onViewState(viewKey, { unread: true });
+        }
+        previousConversation.current = data;
         setConversation(data);
-        if (firstPoll) {
+        if (!modelChosen.current) {
           const lastModel = data.messages.filter((m) => m.role === 'user').at(-1)?.model;
           if (models.some((m) => m.id === lastModel)) setModel(lastModel);
-          firstPoll = false;
+          modelChosen.current = true;
         }
         setRestoring(false);
         setError('');
@@ -789,34 +987,34 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
     };
     if (conversationId) poll();
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [conversationId, refresh, onConversationChange]);
+  }, [conversationId, refresh, onDeleted, onViewState, viewKey]);
 
   useEffect(() => {
-    if (conversationId) return;
-    let pending;
-    try { pending = sessionStorage.getItem('briefai_pending_request'); } catch {}
+    const pending = viewState.pendingRequest;
     if (!pending) return;
     let cancelled = false;
-    setRestoring(true);
-    api('/conversation-requests/' + pending).then(async (res) => {
-      if (cancelled) return;
-      if (res.status === 401) { unauthRef.current(); return; }
-      if (res.ok) {
-        const data = await res.json();
-        if (!cancelled) { onConversationChange(data.id); sessionStorage.removeItem('briefai_pending_request'); }
-      } else if (res.status !== 404) throw new Error('Could not recover the last request.');
-    }).catch(() => { if (!cancelled) setError('Could not recover the last request. Refresh to try again.'); })
-      .finally(() => { if (!cancelled) setRestoring(false); });
-    return () => { cancelled = true; };
-  }, [conversationId, onConversationChange]);
-
-  const newConversation = () => {
-    if (submitting) return;
-    requestRef.current = null;
-    try { sessionStorage.removeItem('briefai_pending_request'); } catch {}
-    setPrompt(''); setImages([]); setImageError(''); setError(''); setConversation(null);
-    onConversationChange(null);
-  };
+    let timer;
+    const recover = async () => {
+      try {
+        const res = await api('/conversation-requests/' + pending.id);
+        if (cancelled) return;
+        if (res.status === 401) { unauthRef.current(); return; }
+        if (res.ok) {
+          const data = await res.json();
+          if (cancelled) return;
+          changeConversation(data.id);
+          setPrompt(''); setImages([]);
+          requestRef.current = null;
+          onViewState(viewKey, { pendingRequest: null });
+          setRefresh((value) => value + 1);
+        } else if (res.status !== 404) throw new Error('Recovery failed');
+      } catch {
+        if (!cancelled) { setError('Could not check the last submission. Reconnecting…'); timer = setTimeout(recover, 3000); }
+      }
+    };
+    recover();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, []);
 
   const retry = async () => {
     setSubmitting(true); setError('');
@@ -838,7 +1036,7 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
       const data = await res.json();
       if (!res.ok) throw new Error('Could not delete the message.');
       setDeleteMessage(null);
-      if (data.deleted_conversation) newConversation();
+      if (data.deleted_conversation) onDeleted(viewKey);
       else setRefresh((x) => x + 1);
     } catch (e) { setError(e.message); }
     finally { setDeleting(false); }
@@ -926,8 +1124,9 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
     };
     // Preserve the submission ID across network retries; resolve it before allowing an edited retry.
     if (!requestRef.current) requestRef.current = { id: crypto.randomUUID(), body };
+    else if (!requestRef.current.body) requestRef.current.body = body;
     const submission = requestRef.current;
-    try { sessionStorage.setItem('briefai_pending_request', submission.id); } catch {}
+    await onViewState(viewKey, { pendingRequest: { id: submission.id } });
     try {
       const res = await api(conversationId ? '/conversations/' + conversationId + '/messages' : '/conversations', {
         method: 'POST', body: JSON.stringify({ ...submission.body, request_id: submission.id }),
@@ -936,14 +1135,14 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
       const data = await res.json();
       if (!res.ok) {
         requestRef.current = null;
-        try { sessionStorage.removeItem('briefai_pending_request'); } catch {}
+        onViewState(viewKey, { pendingRequest: null });
         throw new Error(data.detail || data.error || 'Request failed.');
       }
-      onConversationChange(data.id);
+      changeConversation(data.id);
       setRefresh((x) => x + 1);
       setPrompt(''); setImages([]); setImageError('');
       requestRef.current = null;
-      try { sessionStorage.removeItem('briefai_pending_request'); } catch {}
+      onViewState(viewKey, { pendingRequest: null });
     } catch (e) { setError(e.message || 'Network error. Retry to check the same submission.'); }
     finally { setSubmitting(false); }
   };
@@ -967,7 +1166,6 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
   return (
     <div className="space-y-4">
       {shareMessage && <ShareDialog itemId={shareMessage} basePath="/conversation-messages/" onClose={() => setShareMessage(null)} onUnauth={onUnauth} />}
-      {conversationId && <div className="flex justify-end"><button type="button" className="font-mono text-xs text-muted hover:text-accent" onClick={newConversation} disabled={submitting}>+ New conversation</button></div>}
       {restoring && <p className="text-sm text-muted" role="status">Loading conversation…</p>}
       {conversation?.messages.map((message) => (
         <div key={message.id} className={'corner-panel border border-edge ' + (message.role === 'user' ? 'bg-panel2' : 'bg-panel')}>
@@ -998,6 +1196,7 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
 
         <textarea
           value={prompt}
+          disabled={submitting}
           onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={onKeyDown}
           onPaste={onTextareaPaste}
@@ -1602,18 +1801,13 @@ function SessionSidebar({ model }) {
 
 function Main({ onLogout }) {
   const [tab, setTab] = useState('ask');
-  const [conversationId, setConversationId] = useState(() => {
-    try { return sessionStorage.getItem('briefai_active_conversation') || null; } catch { return null; }
-  });
-  const changeConversation = useCallback((id) => {
-    setConversationId(id);
-    try { if (id) sessionStorage.setItem('briefai_active_conversation', id); else sessionStorage.removeItem('briefai_active_conversation'); } catch {}
-  }, []);
-  const openConversation = (id) => { changeConversation(id); setTab('ask'); };
+  const [openRequest, setOpenRequest] = useState(null);
+  const openConversation = (id) => { setOpenRequest({ id, nonce: crypto.randomUUID() }); setTab('ask'); };
 
   const [navOpen, setNavOpen] = useState(false);
   const [models, setModels] = useState([]);
   const [model, setModel] = useState('');
+  const [defaultModel, setDefaultModel] = useState('');
   const [rate, setRate] = useState(1);
   const [imageLimits, setImageLimits] = useState(null);
   const [settings, setSettings] = useState(loadSettings);
@@ -1623,6 +1817,7 @@ function Main({ onLogout }) {
       if (!d) return;
       setModels(d.models);
       setModel(d.default);
+      setDefaultModel(d.default);
       setRate(d.usd_pln || 1);
       setImageLimits(d.image_limits || null);
     });
@@ -1643,7 +1838,7 @@ function Main({ onLogout }) {
 
   const tabBtn = (id, label) => (
     <button
-      onClick={() => { setTab(id); setNavOpen(false); }}
+      onClick={() => { window.dispatchEvent(new Event('briefai:before-navigation')); setTab(id); setNavOpen(false); }}
       className={
         'font-mono text-xs px-3 py-2 text-left transition-colors border-b '
         + (tab === id ? 'text-accent border-accent' : 'text-muted border-transparent hover:text-white')
@@ -1698,19 +1893,11 @@ function Main({ onLogout }) {
       <main className="max-w-4xl mx-auto px-5 py-6">
         {models.length > 0 && (
           <div className={tab === 'ask' ? 'flex gap-8 items-start' : 'hidden'}>
-            <div className="flex-1 min-w-0 max-w-2xl">
-              {!conversationId && <ContextControls settings={settings} setSettings={setSettings} onEdit={() => setTab('settings')} />}
-              <AskView
-                models={models}
-                model={model}
-                setModel={setModel}
-                rate={rate}
-                imageLimits={imageLimits}
-                settings={settings}
-                onUnauth={unauth}
-                conversationId={conversationId}
-                onConversationChange={changeConversation}
-              />
+            <div className="flex-1 min-w-0">
+              <ConversationWorkspace models={models} defaultModel={defaultModel || models[0].id} rate={rate}
+                imageLimits={imageLimits} settings={settings} setSettings={setSettings}
+                onEditSettings={() => { window.dispatchEvent(new Event('briefai:before-navigation')); setTab('settings'); }} onUnauth={unauth} visible={tab === 'ask'}
+                openRequest={openRequest} onModelChange={setModel} />
             </div>
             <SessionSidebar model={currentModel} />
           </div>

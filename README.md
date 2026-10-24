@@ -13,6 +13,8 @@ persistent session, so you log in once and stay in across tabs.
 ## Features
 
 - Automatically saved conversations with follow-ups, per-message timestamps and model switching.
+- Multiple open conversations per browser tab, with independent drafts, images, model selections and scroll positions.
+- Local draft recovery after refresh, instant switching between cached conversations and background reply indicators.
 - Background generation survives a browser refresh; interrupted worker jobs can be retried explicitly.
 - Delete a user message and all later replies, or delete the first message to remove the conversation.
 - Command Deck interface with matching Settings panels and a Shared tab for active public links.
