@@ -98,23 +98,26 @@ def check_ui():
             page.on('pageerror', lambda error: errors.append(str(error)))
             page.route('**/api/**', route_api)
             page.goto(f'http://127.0.0.1:{server.server_port}')
-            textarea = page.get_by_placeholder('Ask anything…')
+            active = page.locator('[data-conversation-view]:not([hidden])')
+            textarea = active.get_by_placeholder('Ask anything…')
             textarea.fill('First question')
-            page.get_by_role('button', name='brief', exact=True).click()
-            expect(page.get_by_text('First question', exact=True)).to_be_visible()
+            with page.expect_response(lambda response: response.url.endswith('/api/conversations') and response.request.method == 'POST'):
+                page.get_by_role('button', name='brief', exact=True).click()
+            expect(active.get_by_text('First question', exact=True)).to_be_visible()
             assert requests[0]['request_id']
             page.reload()
-            expect(page.get_by_text('First question', exact=True)).to_be_visible()
+            expect(active.get_by_text('First question', exact=True)).to_be_visible()
             complete = True
-            expect(page.get_by_text('Answer 1', exact=True)).to_be_visible(timeout=10000)
-            page.locator('select').select_option('claude-haiku-4-5')
-            page.get_by_placeholder('Follow up…').fill('Follow-up question')
-            page.get_by_role('button', name='send', exact=True).click()
-            expect(page.get_by_text('Follow-up question', exact=True)).to_be_visible()
+            expect(active.get_by_text('Answer 1', exact=True)).to_be_visible(timeout=10000)
+            active.locator('select').select_option('claude-haiku-4-5')
+            active.get_by_placeholder('Follow up…').fill('Follow-up question')
+            with page.expect_response(lambda response: response.url.endswith('/messages') and response.request.method == 'POST'):
+                page.get_by_role('button', name='send', exact=True).click()
+            expect(active.get_by_text('Follow-up question', exact=True)).to_be_visible()
             assert requests[1]['model'] == 'claude-haiku-4-5'
             assert requests[0]['request_id'] != requests[1]['request_id']
             complete = True
-            expect(page.get_by_text('Answer 2', exact=True)).to_be_visible(timeout=10000)
+            expect(active.get_by_text('Answer 2', exact=True)).to_be_visible(timeout=10000)
             page.get_by_role('button', name='Share', exact=True).last.click()
             expect(page.get_by_role('dialog')).to_be_visible()
             # Sharing the current answer keeps the existing explicit publish action.
@@ -125,19 +128,19 @@ def check_ui():
             page.get_by_role('button', name='Delete message and later replies').last.click()
             expect(page.get_by_role('dialog')).to_be_visible()
             page.get_by_role('button', name='Delete', exact=True).click()
-            expect(page.get_by_text('Follow-up question', exact=True)).to_have_count(0)
-            expect(page.get_by_text('Answer 1', exact=True)).to_be_visible()
+            expect(active.get_by_text('Follow-up question', exact=True)).to_have_count(0)
+            expect(active.get_by_text('Answer 1', exact=True)).to_be_visible()
             # The history opens a saved conversation; old entries keep their existing view.
             page.get_by_role('button', name='history', exact=True).click()
             page.get_by_role('button', name='First question').click()
-            expect(page.get_by_text('Answer 1', exact=True)).to_be_visible()
+            expect(active.get_by_text('Answer 1', exact=True)).to_be_visible()
             page.get_by_role('button', name='+ New conversation', exact=True).click()
-            expect(page.get_by_placeholder('Ask anything…')).to_be_visible()
-            expect(page.get_by_text('Answer 1', exact=True)).to_have_count(0)
+            expect(active.get_by_placeholder('Ask anything…')).to_be_visible()
+            expect(active.get_by_text('Answer 1', exact=True)).to_have_count(0)
             # Recover a submission acknowledged by the server before the browser stored its ID.
-            page.evaluate("""id => { sessionStorage.removeItem('briefai_active_conversation'); sessionStorage.setItem('briefai_pending_request', id); }""", first_request)
+            page.evaluate("""id => { sessionStorage.clear(); sessionStorage.setItem('briefai_pending_request', id); }""", first_request)
             page.reload()
-            expect(page.get_by_text('Answer 1', exact=True)).to_be_visible()
+            expect(active.get_by_text('Answer 1', exact=True)).to_be_visible()
             page.set_viewport_size({'width': 390, 'height': 844})
             page.screenshot(path='/private/tmp/brief-conversation-mobile.png', full_page=True)
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Mobile horizontal overflow'

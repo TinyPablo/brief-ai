@@ -59,8 +59,8 @@ rejected. History is never silently truncated. The API limits user messages to
 100,000 characters, follow-up histories to 500,000 stored characters and 100
 messages; provider context limits may be lower.
 
-Titles remain unset at this stage. UI navigation and title generation are
-separate changes.
+Titles remain unset at this stage. Navigation uses the first question as a
+preview; automatic title generation is a separate change.
 
 ## Local verification
 
@@ -87,12 +87,46 @@ transaction. The API check uses and removes an isolated temporary schema, stubs
 providers, and does not issue real model requests. Run these checks against a
 local test database.
 
-The frontend restores the active conversation ID from session storage, polls its
-job while generation is pending, and lists new conversations separately from
-earlier standalone answers. A client-generated request ID also allows recovery
-when a page refresh happens before the create response arrives. No message text
-or image bytes are stored in session storage. Multi-conversation session caching
-and gesture navigation are separate changes.
+## Browser workspace
+
+The browser keeps an ordered set of open conversation views for each tab.
+Opening History selects an existing view or inserts one immediately to the right
+of the active view. New conversation reuses an empty view without a draft or
+attachments; otherwise it inserts a new one on the right. Closing a view selects
+its right neighbor when available, otherwise its left neighbor. Closing the last
+view leaves an empty composer.
+
+Mounted views retain their messages in memory. Switching a settled conversation
+does not fetch it again. Pending jobs continue polling in their own views while
+other conversations can submit requests. Closing a view stops its polling but
+does not cancel server-side generation or delete sent messages.
+
+`sessionStorage` stores a workspace identifier, view order, conversation IDs and
+selected models. Native IndexedDB stores drafts, binary attachments and cached
+conversation snapshots, keyed by workspace and view. Message text and image bytes
+are not placed in `sessionStorage`. Refresh restores the views and drafts, then
+revalidates saved conversations against the server. A pending submission ID lets
+the view recover a request whose HTTP acknowledgement was interrupted.
+
+Each view retains its own selected model and scroll position. A new reply follows
+the bottom only when that view was already at the bottom. Reading earlier
+messages keeps its position and exposes a New reply action. Background views get
+an unread indicator on their navigation controls.
+
+Closing a view with unsent text, attachments or a pending submission requires
+confirmation. Its local draft, attachments and snapshot are then removed; server
+history remains available. A new browser-tab session does not restore a previous
+session's drafts. A BroadcastChannel ownership check separates copied session
+identifiers when duplicating a live tab. Session records not touched for seven
+days are cleaned up on workspace initialization. Open workspaces refresh their
+lifetime once a minute. Physical deletion on browser close is not assumed.
+
+When browser storage is unavailable or full, views continue to work in memory
+and display a persistence warning. The user can continue sending messages;
+unsent changes may not survive refresh in that state.
+
+Navigation currently uses adjacent first-question previews and simple arrows.
+Generated titles, touch gestures and animated transitions are separate changes.
 
 Individual assistant answers retain public sharing. A link exposes only that
 answer and, optionally, its immediate user question and images. Earlier turns,
@@ -109,6 +143,8 @@ responses without model calls:
 
 ```bash
 python3 backend/tests/check_conversation_ui.py
+python3 backend/tests/check_session_storage.py
+python3 backend/tests/check_conversation_sessions.py
 ```
 
 The existing `/api/generate` endpoint remains available for older clients.

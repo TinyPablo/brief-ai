@@ -190,6 +190,25 @@
     }
     .md pre:hover .copy-btn, .copy-btn:focus { opacity: 1; }
     .copy-btn:hover { color: #fff; border-color: #453b2b; }
+
+
+    .conversation-navigation { position: sticky; top: 56px; z-index: 5; background: #0d0c0a; padding: 8px 0; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: start; gap: 16px; margin-bottom: 24px; }
+    .conversation-navigation button { color: #9c9286; font-family: 'Space Mono', monospace; font-size: 11px; }
+    .conversation-navigation button:hover { color: #e6a84a; }
+    .conversation-neighbor { display: flex; align-items: center; gap: 9px; text-align: left; min-height: 32px; max-width: 100%; }
+    .conversation-neighbor.next { margin-left: auto; text-align: right; }
+    .conversation-actions { display: flex; gap: 16px; align-items: center; }
+    .conversation-actions button { min-height: 32px; }
+    .conversation-actions button[aria-label="Close conversation"] { min-width: 32px; }
+    .new-reply-button { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #221e17; color: #e6a84a; border: 1px solid #3a3226; padding: 10px 16px; z-index: 10; font-size: 12px; }
+    [data-conversation-view][hidden] { display: none !important; }
+    @media (max-width: 640px) {
+      .conversation-navigation { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+      .conversation-actions { grid-column: 1 / -1; grid-row: 1; justify-content: flex-end; }
+      .conversation-neighbor, .conversation-actions button { min-height: 44px; }
+      .conversation-actions button[aria-label="Close conversation"] { min-width: 44px; }
+      .conversation-navigation > div:last-child { grid-column: 2; }
+    }
   </style>
 </head>
 <body class="font-sans text-[#e6e6ec] antialiased">
@@ -204,6 +223,7 @@
   <script src="/vendor/katex.js"></script>
   <script src="/vendor/marked-katex.js"></script>
 
+  <script src="/conversation-sessions.js"></script>
   <script type="text/babel" src="/app.jsx"></script>
 </body>
 </html>
