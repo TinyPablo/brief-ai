@@ -122,3 +122,7 @@ CONVERSATION_MIGRATIONS += (
     '''CREATE TRIGGER revoke_conversation_snapshots BEFORE DELETE ON conversation_messages
        FOR EACH ROW EXECUTE FUNCTION revoke_conversation_snapshots()''',
 )
+
+CONVERSATION_MIGRATIONS += (
+    'ALTER TABLE conversation_messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ',
+)

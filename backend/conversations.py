@@ -225,6 +225,86 @@ def register_routes(app, api):
             cur.execute("UPDATE conversation_jobs SET status = 'queued', started_at = NULL, finished_at = NULL, error_code = NULL, error_detail = NULL WHERE id = %s", (str(job['id']),))
             return jsonify(job_id=str(job['id'])), 202
 
+    @app.patch('/api/conversations/<uuid:cid>/messages/<uuid:mid>')
+    @api.require_auth
+    def edit_message(cid, mid):
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict) or not isinstance(body.get('content'), str):
+            return jsonify(error='invalid_request'), 400
+        content = body['content']
+        if not content.strip() or len(content) > MAX_MESSAGE_CHARS:
+            return jsonify(error='invalid_content'), 400
+        if type(body.get('revision')) is not int:
+            return jsonify(error='invalid_revision'), 400
+        with database(api) as cur:
+            cur.execute('SELECT revision FROM conversations WHERE id = %s FOR UPDATE', (str(cid),))
+            conversation = cur.fetchone()
+            if not conversation:
+                return jsonify(error='not_found'), 404
+            if conversation['revision'] != body['revision']:
+                return jsonify(error='conversation_changed', detail='The conversation changed. Reload it before saving.'), 409
+            cur.execute('SELECT position FROM conversation_messages WHERE id = %s AND conversation_id = %s', (str(mid), str(cid)))
+            message = cur.fetchone()
+            if not message:
+                return jsonify(error='not_found'), 404
+            position = message['position']
+            cur.execute('SELECT COALESCE(sum(length(content)), 0) AS chars FROM conversation_messages WHERE conversation_id = %s AND position < %s', (str(cid), position))
+            if cur.fetchone()['chars'] + len(content) > MAX_CONVERSATION_CHARS:
+                return jsonify(error='conversation_too_long'), 400
+            cur.execute('SELECT mi.image_sha FROM conversation_message_images mi JOIN conversation_messages m ON m.id = mi.message_id WHERE m.conversation_id = %s AND m.position > %s', (str(cid), position))
+            shas = {r['image_sha'] for r in cur.fetchall()}
+            # Revoke snapshots containing the edited message, including answer-only links.
+            cur.execute('UPDATE conversation_share_snapshots SET revoked = TRUE WHERE message_id IN (SELECT snapshot_id FROM conversation_share_sources WHERE message_id = %s)', (str(mid),))
+            cur.execute('DELETE FROM conversation_share_images WHERE snapshot_id IN (SELECT snapshot_id FROM conversation_share_sources WHERE message_id = %s)', (str(mid),))
+            cur.execute('DELETE FROM conversation_share_sources WHERE snapshot_id IN (SELECT snapshot_id FROM conversation_share_sources WHERE message_id = %s)', (str(mid),))
+            cur.execute('UPDATE conversation_messages SET share_token = NULL WHERE id = %s', (str(mid),))
+            cur.execute('DELETE FROM conversation_jobs WHERE user_message_id IN (SELECT id FROM conversation_messages WHERE conversation_id = %s AND position >= %s)', (str(cid), position))
+            cur.execute('DELETE FROM conversation_messages WHERE conversation_id = %s AND position > %s', (str(cid), position))
+            cur.execute('UPDATE conversation_messages SET content = %s, edited_at = now() WHERE id = %s', (content, str(mid)))
+            cur.execute("""UPDATE conversations SET revision = revision + 1, updated_at = now(),
+                        title_status = CASE WHEN %s <= 1 AND title_status IN ('queued', 'running')
+                            THEN 'failed' ELSE title_status END WHERE id = %s""", (position, str(cid)))
+            api.delete_orphan_images(cur, shas)
+            return jsonify(ok=True)
+
+    @app.post('/api/conversations/<uuid:cid>/generate')
+    @api.require_auth
+    def generate_answer(cid):
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return jsonify(error='invalid_request'), 400
+        try:
+            request_id = str(UUID(body['request_id']))
+            message_id = str(UUID(body['message_id']))
+        except (KeyError, ValueError, TypeError, AttributeError):
+            return jsonify(error='invalid_request_id'), 400
+        model = body.get('model', api.DEFAULT_MODEL)
+        if not isinstance(model, str) or model not in api.SELECTABLE_MODELS:
+            return jsonify(error='unknown_model'), 400
+        with database(api) as cur:
+            previous = existing_request(cur, request_id, cid)
+            if previous is not None:
+                return previous
+            cur.execute('SELECT revision FROM conversations WHERE id = %s FOR UPDATE', (str(cid),))
+            conversation = cur.fetchone()
+            if not conversation:
+                return jsonify(error='not_found'), 404
+            cur.execute('SELECT id, role FROM conversation_messages WHERE conversation_id = %s ORDER BY position DESC LIMIT 1', (str(cid),))
+            last = cur.fetchone()
+            if not last or last['role'] != 'user' or str(last['id']) != message_id:
+                return jsonify(error='no_unanswered_message'), 409
+            cur.execute('SELECT 1 FROM conversation_jobs WHERE user_message_id = %s', (str(last['id']),))
+            if cur.fetchone():
+                return jsonify(error='answer_already_requested'), 409
+            if not api.MODELS[model].get('supports_images', True):
+                cur.execute('SELECT 1 FROM conversation_message_images mi JOIN conversation_messages m ON m.id = mi.message_id WHERE m.conversation_id = %s LIMIT 1', (str(cid),))
+                if cur.fetchone():
+                    return jsonify(error='images_not_supported'), 400
+            cur.execute('UPDATE conversation_messages SET model = %s WHERE id = %s', (model, str(last['id'])))
+            cur.execute('INSERT INTO conversation_jobs (id, conversation_id, user_message_id, model, revision) VALUES (%s, %s, %s, %s, %s)', (request_id, str(cid), str(last['id']), model, conversation['revision']))
+            cur.execute('UPDATE conversations SET updated_at = now() WHERE id = %s', (str(cid),))
+            return jsonify(id=str(cid), job_id=request_id, message_id=str(last['id'])), 202
+
     @app.delete('/api/conversations/<uuid:cid>/messages/<uuid:mid>')
     @api.require_auth
     def truncate_conversation(cid, mid):

@@ -1060,6 +1060,9 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
   const [refresh, setRefresh] = useState(0);
   const [deleting, setDeleting] = useState(false);
   const [deleteMessage, setDeleteMessage] = useState(null);
+  const [editing, setEditing] = useState(null);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const generateRequest = useRef(null);
   const [copied, setCopied] = useState(null);
   const fileInputRef = useRef(null);
   const requestRef = useRef(viewState.pendingRequest ? { id: viewState.pendingRequest.id, body: null } : null);
@@ -1072,7 +1075,7 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
   const unauthRef = useRef(onUnauth);
   unauthRef.current = onUnauth;
   const busy = ['queued', 'running'].includes(conversation?.job?.status);
-  const loading = submitting || busy;
+  const loading = submitting || busy || savingEdit || !!editing;
   const unanswered = conversation?.messages?.at(-1)?.role === 'user';
 
   useEffect(() => {
@@ -1174,6 +1177,40 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
       if (res.status === 401) { unauthRef.current(); return; }
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || data.error || 'Could not retry.');
+      setRefresh((x) => x + 1);
+    } catch (e) { setError(e.message); }
+    finally { setSubmitting(false); }
+  };
+
+  const saveEdit = async () => {
+    if (savingEdit || !editing.content.trim()) return;
+    setSavingEdit(true); setError('');
+    try {
+      const res = await api('/conversations/' + conversationId + '/messages/' + editing.id, {
+        method: 'PATCH', body: JSON.stringify({ content: editing.content, revision: editing.revision }),
+      });
+      if (res.status === 401) { onUnauth(); return; }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || data.error || 'Could not save the message.');
+      generateRequest.current = null;
+      branchRequests.current.clear();
+      setEditing(null);
+      setRefresh((x) => x + 1);
+    } catch (e) { setError(e.message); }
+    finally { setSavingEdit(false); }
+  };
+
+  const generateAnswer = async () => {
+    if (submitting) return;
+    setSubmitting(true); setError('');
+    if (!generateRequest.current) generateRequest.current = crypto.randomUUID();
+    try {
+      const res = await api('/conversations/' + conversationId + '/generate', {
+        method: 'POST', body: JSON.stringify({ request_id: generateRequest.current, model, message_id: conversation.messages.at(-1).id }),
+      });
+      if (res.status === 401) { onUnauth(); return; }
+      const data = await res.json();
+      if (!res.ok) { generateRequest.current = null; throw new Error(data.error || 'Could not generate an answer.'); }
       setRefresh((x) => x + 1);
     } catch (e) { setError(e.message); }
     finally { setSubmitting(false); }
@@ -1323,6 +1360,8 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
           <div className="message-toolbar flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2 border-b border-edge font-mono text-[11px] text-muted">
             <span>{message.role === 'user' ? 'You' : models.find((m) => m.id === message.model)?.label || message.model}</span>
             <time dateTime={message.created_at}>{fmtTime(message.created_at)}</time>
+            {message.edited_at && <span title={message.edited_at}>edited</span>}
+            <button type="button" className="hover:text-accent2 disabled:opacity-40" disabled={submitting || deleting || !!editing} onClick={() => setEditing({ id: message.id, content: message.content, revision: conversation.revision })}>Edit</button>
             {message.role === 'user'
               ? <button type="button" className="ml-auto hover:text-bad p-1" aria-label="Delete message and later replies" title="Delete message and later replies" disabled={deleting} onClick={() => setDeleteMessage(message.id)}><TrashIcon /></button>
               : <button type="button" className="ml-auto hover:text-white" onClick={async () => { try { await navigator.clipboard.writeText(message.content); setCopied(message.id); setTimeout(() => setCopied(null), 1500); } catch { setError('Clipboard is unavailable. Select the answer to copy it.'); } }}>{copied === message.id ? 'copied' : 'copy'}</button>}
@@ -1330,11 +1369,16 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
             {message.role === 'assistant' && <button type="button" onClick={() => setShareMessage(message.id)} className="hover:text-accent2">Share</button>}
           </div>
           <div className="p-5">
-            {message.role === 'user' ? <div className="whitespace-pre-wrap break-words">{message.content}</div> : <><Meta result={{ ...message, model_label: models.find((m) => m.id === message.model)?.label || message.model }} rate={rate} /><Markdown text={message.content} /></>}
+            {editing?.id === message.id ? <div>
+              <textarea aria-label="Edit message" autoFocus value={editing.content} disabled={savingEdit} maxLength={100000} rows={6} className="w-full bg-transparent border border-edge p-3 outline-none focus:border-accent resize-y" onChange={(e) => setEditing({ ...editing, content: e.target.value })} />
+              <p className="text-sm text-muted mt-2">Saving removes all later messages and revokes links containing this message. No answer is generated.</p>
+              <div className="flex gap-3 mt-3"><button type="button" className="deck-button" disabled={savingEdit || !editing.content.trim()} onClick={saveEdit}>{savingEdit ? 'Saving…' : 'Save'}</button><button type="button" className="deck-button" disabled={savingEdit} onClick={() => setEditing(null)}>Cancel</button></div>
+            </div> : <>{message.role === 'user' ? <div className="whitespace-pre-wrap break-words">{message.content}</div> : <><Meta result={{ ...message, model_label: models.find((m) => m.id === message.model)?.label || message.model }} rate={rate} /><Markdown text={message.content} /></>}</>}
             {!!message.images?.length && <div className="mt-3"><AttachmentStrip images={message.images} size={64} /></div>}
           </div>
         </div>
       ))}
+      {unanswered && !busy && conversation?.job?.status !== 'failed' && <button type="button" className="deck-button" disabled={loading || restoring || unsupportedImages} onClick={generateAnswer}>Generate answer</button>}
       {conversation?.job?.status === 'failed' && <div role="alert" className="border border-bad/40 p-4 text-sm"><p>{conversation.job.error_detail}</p><button type="button" className="deck-button mt-3" onClick={retry} disabled={submitting}>Retry answer</button></div>}
       {deleteMessage && <Modal title="Delete from this message?" onClose={() => { if (!deleting) setDeleteMessage(null); }}><p className="text-sm text-muted">This message and all later replies will be deleted.</p><div className="flex gap-3 mt-6"><button type="button" className="deck-button" disabled={deleting} onClick={() => setDeleteMessage(null)}>Keep messages</button><button type="button" className="deck-button danger" disabled={deleting} onClick={truncate}>{deleting ? 'Deleting…' : 'Delete'}</button></div></Modal>}
       <div

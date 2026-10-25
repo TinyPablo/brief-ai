@@ -31,6 +31,23 @@ The provider request may still finish and incur a charge after deletion; its
 result is discarded. Images are deleted only when neither legacy history nor a
 conversation references them.
 
+## Message editing
+
+Both user and assistant messages can be edited inline. Saving keeps the message
+ID, attachments and original timestamp, records `edited_at`, and deletes every
+later message and job atomically. Existing generation metrics describe the
+original model call, not manually edited text. Independent branches are unaffected.
+Saving, including an unchanged message, does not request a model response.
+Snapshots containing the edited message are revoked; earlier snapshots remain
+available. In-flight results from the previous revision are discarded.
+
+After editing a user message, Generate answer explicitly queues a response using
+the selected model and existing attachments. After editing an assistant message,
+the next action is a normal follow-up. Unsaved composer drafts are preserved.
+Edits submit the conversation revision and reject stale revisions with HTTP 409.
+An unfinished title request based on the edited first exchange is discarded;
+already saved titles are retained.
+
 ## API
 
 All routes require the existing authenticated session.
@@ -42,6 +59,8 @@ All routes require the existing authenticated session.
 | GET | `/api/conversations/<id>` | Read messages, attachment metadata and the latest job |
 | POST | `/api/conversations/<id>/messages` | Append a follow-up after the last assistant response |
 | POST | `/api/conversations/<id>/retry` | Explicitly retry the latest failed job |
+| PATCH | `/api/conversations/<id>/messages/<message_id>` | Edit text with `content` and `revision`, truncating later messages |
+| POST | `/api/conversations/<id>/generate` | Queue an answer to an edited user message using `request_id`, `message_id` and `model` |
 | DELETE | `/api/conversations/<id>/messages/<message_id>` | Delete a user message and the rest of the conversation |
 
 Create and append bodies contain `request_id` (a client-generated UUID),
@@ -80,6 +99,7 @@ application data volume; all conversation data is in `db_data`.
 python3 -m pytest backend/tests -q
 PYTHONPATH=backend python3 backend/tests/check_conversation_schema.py
 PYTHONPATH=backend python3 backend/tests/check_conversation_api.py
+PYTHONPATH=backend python3 backend/tests/check_conversation_editing.py
 ```
 
 The last two commands require `DATABASE_URL`. The schema check rolls back its
