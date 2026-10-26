@@ -14,7 +14,9 @@ The browser connects directly to `wss://stt-rt.soniox.com/transcribe-websocket` 
 
 The microphone requires HTTPS or localhost, browser permission, AudioContext and AudioWorklet support. An AudioWorklet converts microphone audio to mono 16-bit little-endian PCM at 16 kHz. Audio is streamed in approximately 100 ms chunks; the application does not save recordings.
 
-Recognized text appears in the field during capture. Final tokens accumulate while provisional tokens replace the previous provisional tail. Existing text is retained and new speech is appended at the end. The field, Send and Save remain locked during recording and finalization.
+Recognized text appears in the field during capture. Final tokens accumulate while provisional tokens replace the previous provisional tail. Existing text is retained and new speech is appended at the end. The field remains locked during recording and finalization. Send and Save remain available while recording, including before the first recognized word. Clicking either stops capture, waits for the final tokens and submits the finalized text once. During this wait the action shows a spinner and is disabled. A transcription failure preserves the text without submitting it. Leaving the view or hiding the browser page cancels any pending automatic submission.
+
+The microphone control shows a spinner while connecting, a Stop square with a pulsing amber outline while streaming, and a spinner while finishing. The listening status remains available to screen readers without visible status text. Reduced-motion preferences disable the pulse.
 
 Stop releases microphone tracks immediately, flushes the remaining audio and waits for Soniox's final response. After eight seconds without completion, the visible text is retained with an interruption message. A new recording appends to the existing field, including any retained provisional words. There is no automatic reconnect or audio replay.
 

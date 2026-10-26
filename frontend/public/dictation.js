@@ -37,12 +37,17 @@
     notify(state, error = '') {
       this.state = state;
       this.onState?.({ state, error });
+      if (state === 'idle' || state === 'error') {
+        this.resolveFinish?.(state === 'idle' ? this.value : null);
+        this.resolveFinish = null;
+      }
     }
     publish() {
       const speech = this.text.stable + this.text.partial;
       const separator = this.base && speech && !/\s$/.test(this.base) && !/^\s/.test(speech) ? ' ' : '';
       const value = this.base + separator + speech;
       if (value.length > 100000) { this.fail('length'); return; }
+      this.value = value;
       this.onText?.(value);
     }
     async start(base) {
@@ -50,7 +55,8 @@
       if (!supported()) { this.notify('error', errors.unsupported); return; }
       if (owner && owner !== this) { this.notify('error', errors.occupied); return; }
       owner = this;
-      this.base = base;
+      this.base = this.value = base;
+      this.finishPromise = null;
       this.text = { stable: '', partial: '' };
       this.closed = false;
       this.notify('starting');
@@ -124,6 +130,7 @@
             if (message.error_code || message.error_type) { this.fail(message.error_type || 'provider'); return; }
             reduce(this.text, message);
             this.publish();
+            if (this.closed) return;
             if (message.finished) {
               if (this.state !== 'finishing') { this.fail('interrupted'); return; }
               const provisional = !!this.text.partial;
@@ -135,6 +142,12 @@
         socket.onerror = () => this.fail('connection');
         socket.onclose = () => { if (!this.closed) this.fail('connection'); };
       } catch (error) { if (!this.closed) this.fail(error.name in errors ? error.name : error.message); }
+    }
+    finish() {
+      if (!['recording', 'finishing'].includes(this.state)) return Promise.resolve(null);
+      if (!this.finishPromise) this.finishPromise = new Promise((resolve) => { this.resolveFinish = resolve; });
+      this.stop();
+      return this.finishPromise;
     }
     stop() {
       if (this.state === 'starting') { this.cleanup(); this.notify('idle'); return; }
@@ -166,7 +179,7 @@
       if (this.socket) { this.socket.onopen = this.socket.onmessage = this.socket.onclose = this.socket.onerror = null; this.socket.close(); }
       if (owner === this) owner = null;
     }
-    dispose() { this.onText = this.onState = this.onUnauth = null; this.cleanup(); }
+    dispose() { this.resolveFinish?.(null); this.resolveFinish = null; this.onText = this.onState = this.onUnauth = null; this.cleanup(); }
   }
   window.BriefDictation = { Session, supported, reduce };
 })();

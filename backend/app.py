@@ -22,6 +22,7 @@ from google import genai
 from google.genai import types as genai_types
 from openai import OpenAI
 import local_inference
+import dictation
 
 TOTP_SECRET = os.environ.get("TOTP_SECRET", "")
 if not re.fullmatch(r"[A-Z2-7]+=*", TOTP_SECRET):
@@ -792,6 +793,7 @@ def config():
         })
     return jsonify(
         models=models,
+        dictation={"enabled": dictation.enabled(), "provider": "soniox"},
         default=DEFAULT_MODEL,
         usd_pln=USD_TO_PLN,
         max_tokens=MAX_TOKENS,
@@ -1221,6 +1223,7 @@ def local_api():
 
 
 from conversations import register_routes
+dictation.register_routes(app, require_auth)
 from conversation_sharing import register_sharing
 from conversation_branches import register_branches
 register_routes(app, sys.modules[__name__])

@@ -1134,50 +1134,70 @@ function ModelSelect({ models, value, onChange, disabled = false, label = 'Model
 function useDictation(value, setValue, active, enabled, onUnauth) {
   const [status, setStatus] = useState({ state: 'idle', error: '' });
   const session = useRef(null);
+  const submitting = useRef(false);
+  const generation = useRef(0);
+  const [preparing, setPreparing] = useState(false);
   const latest = useRef({ value, setValue, onUnauth });
   latest.current = { value, setValue, onUnauth };
   const locked = ['starting', 'recording', 'finishing'].includes(status.state);
   const start = () => {
-    if (!active || !enabled || session.current && ['starting', 'recording', 'finishing'].includes(session.current.state)) return;
+    if (!active || !enabled || submitting.current || session.current && ['starting', 'recording', 'finishing'].includes(session.current.state)) return;
     session.current?.dispose();
     session.current = new BriefDictation.Session({
-      onText: (text) => latest.current.setValue(text), onState: setStatus,
+      onText: (text) => { latest.current.value = text; latest.current.setValue(text); }, onState: setStatus,
       onUnauth: () => latest.current.onUnauth?.(),
     });
     session.current.start(latest.current.value);
   };
-  useEffect(() => { if (!active) session.current?.stop(); }, [active]);
+  useEffect(() => { if (!active) { generation.current++; session.current?.stop(); } }, [active]);
   useEffect(() => {
-    const stop = () => session.current?.stop();
+    const stop = () => { generation.current++; session.current?.stop(); };
     const visibility = () => { if (document.hidden) stop(); };
     document.addEventListener('visibilitychange', visibility);
     window.addEventListener('pagehide', stop);
     return () => {
       document.removeEventListener('visibilitychange', visibility);
       window.removeEventListener('pagehide', stop);
+      generation.current++;
       session.current?.dispose();
     };
   }, []);
-  return { ...status, locked, enabled, start, stop: () => session.current?.stop() };
+  const submit = async (action) => {
+    if (submitting.current || !active || session.current?.state === 'starting') return;
+    submitting.current = true;
+    const version = generation.current;
+    try {
+      let text = latest.current.value;
+      if (['recording', 'finishing'].includes(session.current?.state)) {
+        setPreparing(true);
+        text = await session.current.finish();
+        if (text === null || version !== generation.current) return;
+      }
+      await action(text);
+    } finally {
+      submitting.current = false;
+      setPreparing(false);
+    }
+  };
+  return { ...status, locked: locked || preparing, preparing, submit, enabled, start, stop: () => session.current?.stop() };
 }
 
 function DictationButton({ dictation, disabled }) {
   if (!dictation.enabled) return null;
   const recording = ['starting', 'recording'].includes(dictation.state);
-  const label = recording ? 'Stop dictation' : dictation.state === 'error' ? 'Resume dictation' : 'Start dictation';
-  return <button type="button" className={'message-action dictation-button' + (recording ? ' dictation-active' : '')}
-    aria-label={label} title={label} aria-pressed={recording} disabled={dictation.state === 'finishing' || (!recording && disabled)}
+  const label = dictation.state === 'starting' ? 'Connecting microphone' : dictation.state === 'recording' ? 'Stop dictation' : dictation.state === 'finishing' ? 'Finishing dictation' : dictation.state === 'error' ? 'Resume dictation' : 'Start dictation';
+  return <button type="button" className={'message-action dictation-button' + (dictation.state === 'recording' ? ' dictation-active' : '')}
+    data-dictation-state={dictation.state} aria-label={label} title={label} aria-pressed={recording} disabled={dictation.state === 'finishing' || (!recording && (disabled || dictation.preparing))}
     onClick={recording ? dictation.stop : dictation.start}>
-    {dictation.state === 'finishing' ? <span className="spinner" /> : recording ? <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" /></svg> : <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true"><rect x="8" y="2" width="8" height="13" rx="4" /><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8" /></svg>}
+    {['starting', 'finishing'].includes(dictation.state) ? <span className="spinner" /> : recording ? <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" /></svg> : <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true"><rect x="8" y="2" width="8" height="13" rx="4" /><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8" /></svg>}
     {dictation.state === 'error' && <span className="font-mono text-[10px]">Resume</span>}
   </button>;
 }
 
 function DictationStatus({ dictation }) {
-  if (!dictation.enabled || dictation.state === 'idle') return null;
-  return <p className={'px-4 pb-2 font-mono text-[11px] ' + (dictation.error ? 'text-bad' : 'text-accent2')} role={dictation.error ? 'alert' : 'status'}>
-    {dictation.error || ({ starting: 'Connecting microphone…', recording: 'Listening · PL / EN', finishing: 'Finishing transcription…' })[dictation.state]}
-  </p>;
+  if (!dictation.enabled) return null;
+  if (dictation.error) return <p className="px-4 pb-2 font-mono text-[11px] text-bad" role="alert">{dictation.error}</p>;
+  return <span className="sr-only" role="status">{({ starting: 'Connecting microphone', recording: 'Microphone listening', finishing: 'Finishing dictation' })[dictation.state] || ''}</span>;
 }
 
 function MessageEditor({ edit, models, limits, onSave, onCancel, dictationEnabled, onUnauth }) {
@@ -1219,10 +1239,10 @@ function MessageEditor({ edit, models, limits, onSave, onCancel, dictationEnable
     } catch { if (mounted.current) setError('Could not read one of the images.'); }
     finally { if (mounted.current) setReading(false); }
   };
-  const save = async () => {
-    if (saving || reading || dictation.locked || (!content.trim() && (!user || !images.length))) return;
+  const save = () => dictation.submit(async (finalContent) => {
+    if (saving || reading || (!finalContent.trim() && (!user || !images.length))) return;
     if (!pending.current) pending.current = {
-      content, revision: edit.revision, request_id: crypto.randomUUID(),
+      content: finalContent, revision: edit.revision, request_id: crypto.randomUUID(),
       ...(user ? { model, images: images.map((im) => im.sha ? { sha: im.sha } : {
         data: im.base64, media_type: im.mediaType, width: im.width, height: im.height,
         ...(im.thumb ? { thumb: im.thumb.base64, thumb_media_type: im.thumb.mediaType } : {}),
@@ -1236,7 +1256,7 @@ function MessageEditor({ edit, models, limits, onSave, onCancel, dictationEnable
       else setUncertain(true);
       setError(e.message);
     } finally { if (mounted.current) setSaving(false); }
-  };
+  });
   return <div className="message-editor" onDrop={(e) => { e.preventDefault(); addFiles(e.dataTransfer.files); }} onDragOver={(e) => e.preventDefault()}>
     <textarea ref={textarea} aria-label="Edit message" value={content} disabled={locked} maxLength={100000} rows={4}
       className="w-full bg-transparent resize-y outline-none px-5 pt-5 pb-2 text-[0.95rem]"
@@ -1249,7 +1269,7 @@ function MessageEditor({ edit, models, limits, onSave, onCancel, dictationEnable
       {user && <><ModelSelect models={models} value={model} disabled={locked} onChange={setModel} label="Edit model" /><AttachmentPicker images={images} limits={limits} label="Attach images to message" disabled={locked || reading || selected?.supports_images === false} onClick={() => fileInput.current.click()} />
       <input ref={fileInput} type="file" multiple accept={limits.allowed_types.join(',')} className="hidden" onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }} /></>}
       <div className="ml-auto flex gap-2 items-center"><DictationButton dictation={dictation} disabled={saving || uncertain || reading} /><button type="button" className="message-action" aria-label="Cancel editing" title="Cancel · Esc" disabled={saving} onClick={onCancel}><MessageIcon name="close" /></button>
-      <button type="button" className="flex items-center gap-2 bg-accent hover:bg-accent2 disabled:opacity-40 disabled:hover:bg-accent text-accentInk font-mono text-[11px] font-bold px-4 py-1.5 transition-colors" disabled={saving || reading || dictation.locked || (!content.trim() && (!user || !images.length))} onClick={save}>{saving ? 'Saving…' : uncertain ? 'Try again' : 'Save'}</button></div>
+      <button type="button" className="flex items-center gap-2 bg-accent hover:bg-accent2 disabled:opacity-40 disabled:hover:bg-accent text-accentInk font-mono text-[11px] font-bold px-4 py-1.5 transition-colors" disabled={saving || reading || dictation.preparing || ['starting', 'finishing'].includes(dictation.state) || (!content.trim() && (!user || !images.length) && dictation.state !== 'recording')} onClick={save}>{dictation.preparing && <span className="spinner" />}{dictation.preparing ? 'Finishing…' : saving ? 'Saving…' : uncertain ? 'Try again' : 'Save'}</button></div>
       <p className="w-full text-[11px] font-mono text-muted">Saving changes removes later messages{user ? ' and generates a new answer.' : '.'}</p>
       {error && <p role="alert" className="w-full text-sm text-bad">{error}</p>}
     </div>
@@ -1580,11 +1600,11 @@ function AskView({ models, model, setModel, rate, imageLimits, dictationEnabled,
     return (inTok / 1e6 * currentModel.input) * rate;
   }, [prompt, currentModel, settings, imagesTokenTotal, rate, images.length, conversation]);
 
-  const send = async () => {
-    if (dictation.locked || loading || restoring || (unanswered && !requestRef.current) || (!requestRef.current?.body && ((!prompt.trim() && !images.length) || overLimit || unsupportedImages))) return;
+  const send = () => dictation.submit(async (finalPrompt) => {
+    if (loading || restoring || (unanswered && !requestRef.current) || (!requestRef.current?.body && ((!finalPrompt.trim() && !images.length) || overLimit || unsupportedImages))) return;
     setSubmitting(true); setError('');
     const body = {
-      model, prompt: prompt.trim(), brief: true,
+      model, prompt: finalPrompt.trim(), brief: true,
       ...(!conversationId ? { context: buildContext(settings) } : {}),
       images: images.map((im) => ({
         data: im.base64, media_type: im.mediaType, width: im.width, height: im.height,
@@ -1616,7 +1636,7 @@ function AskView({ models, model, setModel, rate, imageLimits, dictationEnabled,
       onViewState(viewKey, { pendingRequest: null });
     } catch (e) { setError(e.message || 'Network error. Retry to check the same submission.'); }
     finally { setSubmitting(false); }
-  };
+  });
 
   const clearAll = () => {
     setPrompt('');
@@ -1632,7 +1652,7 @@ function AskView({ models, model, setModel, rate, imageLimits, dictationEnabled,
     }
   };
 
-  const sendDisabled = dictation.locked || loading || restoring || unanswered || (!prompt.trim() && !images.length) || overLimit || unsupportedImages;
+  const sendDisabled = dictation.preparing || ['starting', 'finishing'].includes(dictation.state) || loading || restoring || unanswered || (!prompt.trim() && !images.length && dictation.state !== 'recording') || overLimit || unsupportedImages;
 
   return (
     <div className="space-y-4">
@@ -1674,10 +1694,10 @@ function AskView({ models, model, setModel, rate, imageLimits, dictationEnabled,
           placeholder={conversationId ? 'Follow up…' : 'Ask anything…'} rows={3}
           className="w-full bg-transparent resize-y outline-none px-4 pt-3 pb-1 text-[0.95rem] placeholder:text-muted/70 min-h-[4.5rem]" />
         <DictationStatus dictation={dictation} />
-        {images.length > 0 && <div className="flex flex-wrap gap-2.5 px-4 pt-3 pb-1">{images.map((im, index) => <ImageThumb key={im.id} image={im} images={images} index={index} onRemove={removeImage} />)}</div>}
+        {images.length > 0 && <div className="flex flex-wrap gap-2.5 px-4 pt-3 pb-1">{images.map((im, index) => <ImageThumb key={im.id} image={im} images={images} index={index} onRemove={dictation.preparing ? null : removeImage} />)}</div>}
 
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 border-t border-edge font-mono text-[11px] text-muted">
-          <ModelSelect models={models} value={model} onChange={setModel} />
+          <ModelSelect models={models} value={model} onChange={setModel} disabled={dictation.preparing} />
 
 
           <AttachmentPicker images={images} limits={limits} disabled={dictation.locked || currentModel?.supports_images === false} onClick={() => fileInputRef.current?.click()} />
@@ -1710,8 +1730,8 @@ function AskView({ models, model, setModel, rate, imageLimits, dictationEnabled,
               disabled={sendDisabled}
               className="flex items-center gap-2 bg-accent hover:bg-accent2 disabled:opacity-40 disabled:hover:bg-accent text-accentInk text-[11px] font-bold px-4 py-1.5 transition-colors"
             >
-              {(submitting || busy) ? <span className="spinner" /> : null}
-              {(submitting || busy) ? 'thinking…' : conversationId ? 'send' : 'brief'}
+              {(submitting || busy || dictation.preparing) ? <span className="spinner" /> : null}
+              {dictation.preparing ? 'Finishing…' : (submitting || busy) ? 'thinking…' : conversationId ? 'send' : 'brief'}
             </button>
           </div>
         </div>

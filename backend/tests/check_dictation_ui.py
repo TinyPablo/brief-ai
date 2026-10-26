@@ -25,7 +25,7 @@ class FakeSocket {
     if (protocols[0] !== 'soniox-api-key' || protocols[1] !== 'temporary-test') throw Error('Invalid credential');
     this.readyState = 0; this.bufferedAmount = 0; this.frames = []; this.binary = 0;
     window.sockets.push(this);
-    setTimeout(() => { this.readyState = 1; this.onopen?.(); }, 20);
+    setTimeout(() => { this.readyState = 1; this.onopen?.(); }, window.connectDelay || 20);
   }
   send(data) {
     if (typeof data !== 'string') { this.binary++; return; }
@@ -49,6 +49,7 @@ def check():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     errors = []
     sessions = []
+    submissions, edits = [], []
     chat = dict(id='chat', title='Test chat', revision=0, messages=[
         dict(id='question', role='user', content='Original question', model='gemini', images=[], created_at='2026-10-27T12:00:00Z'),
         dict(id='answer', role='assistant', content='Original answer', model='gemini', images=[], created_at='2026-10-27T12:00:00Z'),
@@ -68,6 +69,16 @@ def check():
             data = {'api_key': 'temporary-test'}
         elif path.startswith('/conversations?'):
             data = {'items': [dict(id='chat', title='Test chat', prompt_preview='Question', created_at='2026-10-27T12:00:00Z', message_count=2, status='completed')]}
+        elif path == '/conversations/chat/messages':
+            body = route.request.post_data_json
+            submissions.append(body)
+            data = {'id': 'chat'}
+        elif route.request.method == 'PATCH' and path == '/conversations/chat/messages/question':
+            body = route.request.post_data_json
+            edits.append(body)
+            chat['messages'][0]['content'] = body['content']
+            chat['revision'] += 1
+            data = {'ok': True, 'changed': True}
         elif path == '/conversations/chat':
             data = chat
         elif path.startswith('/history?'):
@@ -89,10 +100,14 @@ def check():
             active = page.locator('[data-conversation-view]:not([hidden])')
             prompt = active.get_by_placeholder('Ask anything…')
             prompt.fill('Keep this draft.')
+            page.evaluate('window.connectDelay = 600')
             active.get_by_role('button', name='Start dictation').click()
-            expect(active.get_by_text('Listening · PL / EN')).to_be_visible()
+            expect(active.get_by_role('button', name='Connecting microphone').locator('.spinner')).to_be_visible()
+            assert not active.locator('[data-dictation-state=starting]').evaluate('(element) => element.classList.contains("dictation-active")')
+            expect(active.locator('[data-dictation-state=recording]')).to_be_visible()
+            page.evaluate('window.connectDelay = 20')
             expect(prompt).to_be_disabled()
-            expect(active.get_by_role('button', name='brief', exact=True)).to_be_disabled()
+            expect(active.get_by_role('button', name='brief', exact=True)).to_be_enabled()
             page.wait_for_function('sockets.at(-1).binary > 0')
             config = page.evaluate('JSON.parse(sockets.at(-1).frames[0])')
             assert config['audio_format'] == 'pcm_s16le' and config['sample_rate'] == 16000
@@ -106,7 +121,7 @@ def check():
             expect(active.get_by_role('button', name='Stop dictation')).to_be_visible()
             page.evaluate('window.holdFinish = true')
             active.get_by_role('button', name='Stop dictation').click()
-            expect(active.get_by_text('Finishing transcription…')).to_be_visible()
+            expect(active.get_by_role('button', name='Finishing dictation')).to_be_visible()
             expect(prompt).to_be_disabled()
             page.wait_for_function("tracks.every(t => t.readyState === 'ended') && sockets.at(-1).frames.includes('')")
             page.evaluate("sockets.at(-1).emit({tokens:[{text:' Koniec.',is_final:true}],finished:true})")
@@ -114,20 +129,20 @@ def check():
             expect(prompt).to_have_value('Keep this draft. Cześć Docker i React. Koniec.')
             prompt.fill('Edited draft.')
             active.get_by_role('button', name='Start dictation').click()
-            expect(active.get_by_text('Listening · PL / EN')).to_be_visible()
+            expect(active.locator('[data-dictation-state=recording]')).to_be_visible()
             page.evaluate("sockets.at(-1).emit({tokens:[{text:'scapular push-ups',is_final:false}]}); sockets.at(-1).close()")
             expect(prompt).to_have_value('Edited draft. scapular push-ups')
             expect(prompt).to_be_enabled()
             expect(active.get_by_role('button', name='Resume dictation')).to_be_visible()
             active.get_by_role('button', name='Resume dictation').click()
-            expect(active.get_by_text('Listening · PL / EN')).to_be_visible()
+            expect(active.locator('[data-dictation-state=recording]')).to_be_visible()
             page.evaluate("sockets.at(-1).emit({tokens:[{text:' i 1RM.',is_final:true}]}); window.holdFinish = false")
             active.get_by_role('button', name='Stop dictation').click()
             expect(prompt).to_have_value('Edited draft. scapular push-ups i 1RM.')
             expect(prompt).to_be_enabled()
             # Moving to a neighboring workspace stops capture and preserves this draft.
             active.get_by_role('button', name='Start dictation').click()
-            expect(active.get_by_text('Listening · PL / EN')).to_be_visible()
+            expect(active.locator('[data-dictation-state=recording]')).to_be_visible()
             page.get_by_role('button', name='New conversation', exact=True).click()
             page.wait_for_function("tracks.every(t => t.readyState === 'ended')")
             page.locator('[aria-label^="Previous conversation:"]').click()
@@ -135,7 +150,7 @@ def check():
             expect(active.get_by_role('button', name='Start dictation')).to_be_visible()
             # Navigation stops the microphone while retaining the draft.
             active.get_by_role('button', name='Start dictation').click()
-            expect(active.get_by_text('Listening · PL / EN')).to_be_visible()
+            expect(active.locator('[data-dictation-state=recording]')).to_be_visible()
             page.get_by_role('button', name='history', exact=True).click()
             page.wait_for_function("tracks.every(t => t.readyState === 'ended')")
             page.get_by_role('button', name='Test chat').click()
@@ -144,16 +159,16 @@ def check():
             editor.fill('Editing question.')
             editor_box = active.locator('.message-editor')
             editor_box.get_by_role('button', name='Start dictation').click()
-            expect(editor_box.get_by_text('Listening · PL / EN')).to_be_visible()
+            expect(editor_box.locator('[data-dictation-state=recording]')).to_be_visible()
             expect(editor).to_be_disabled()
-            expect(editor_box.get_by_role('button', name='Save', exact=True)).to_be_disabled()
+            expect(editor_box.get_by_role('button', name='Save', exact=True)).to_be_enabled()
             page.evaluate("sockets.at(-1).emit({tokens:[{text:' PostgreSQL.',is_final:true}]})")
             editor_box.get_by_role('button', name='Stop dictation').click()
             expect(editor).to_have_value('Editing question. PostgreSQL.')
             expect(editor).to_be_enabled()
             # Leaving cancels the entire earlier-message edit.
             editor_box.get_by_role('button', name='Start dictation').click()
-            expect(editor_box.get_by_text('Listening · PL / EN')).to_be_visible()
+            expect(editor_box.locator('[data-dictation-state=recording]')).to_be_visible()
             page.get_by_role('button', name='history', exact=True).click()
             page.wait_for_function("tracks.every(t => t.readyState === 'ended')")
             page.get_by_role('button', name='Test chat').click()
@@ -167,6 +182,7 @@ def check():
             active.get_by_role('button', name='Start dictation').scroll_into_view_if_needed()
             page.screenshot(path='/private/tmp/brief-dictation-mobile.png', full_page=True)
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
+            page.set_viewport_size({'width': 1360, 'height': 1000})
             assert len(sessions) == 7, len(sessions)
             # The same reducer handles changing partials without duplicating final text.
             assert page.evaluate("""() => {
@@ -232,6 +248,58 @@ def check():
             page.wait_for_function("engineState.state === 'error'", timeout=10000)
             assert page.evaluate('engineText') == 'base provisional'
             assert page.evaluate("tracks.every(t => t.readyState === 'ended')")
+            # Send waits for final tokens, then submits exactly once with the final text.
+            page.evaluate('window.holdFinish = true')
+            active.get_by_role('button', name='Start dictation').click()
+            expect(active.locator('[data-dictation-state=recording]')).to_be_visible()
+            page.evaluate("sockets.at(-1).emit({tokens:[{text:' draft',is_final:false}]})")
+            active.get_by_role('button', name='send', exact=True).click()
+            expect(active.get_by_role('button', name='Finishing…', exact=True)).to_be_disabled()
+            active.get_by_role('button', name='Finishing…', exact=True).evaluate('(button) => { button.click(); button.click(); }')
+            assert not submissions
+            page.wait_for_function("tracks.every(t => t.readyState === 'ended') && sockets.at(-1).frames.includes('')")
+            page.evaluate("sockets.at(-1).emit({tokens:[{text:' finalized',is_final:true}],finished:true})")
+            expect(active.get_by_placeholder('Follow up…')).to_have_value('')
+            assert len(submissions) == 1 and submissions[0]['prompt'] == 'Mobile prompt finalized', submissions
+            # The same behavior applies to saving an edited user message.
+            active.get_by_role('button', name='Edit', exact=True).first.click()
+            editor_box = active.locator('.message-editor')
+            editor_box.get_by_role('button', name='Start dictation').click()
+            expect(editor_box.locator('[data-dictation-state=recording]')).to_be_visible()
+            page.evaluate("sockets.at(-1).emit({tokens:[{text:' temporary',is_final:false}]})")
+            editor_box.get_by_role('button', name='Save', exact=True).click()
+            assert not edits
+            page.evaluate("sockets.at(-1).emit({tokens:[{text:' revised',is_final:true}],finished:true})")
+            expect(active.locator('.message-editor')).to_have_count(0)
+            assert len(edits) == 1 and edits[0]['content'] == 'Original question revised', edits
+            # A failed finalization keeps text and never submits automatically.
+            active.get_by_role('button', name='Start dictation').click()
+            expect(active.locator('[data-dictation-state=recording]')).to_be_visible()
+            page.evaluate("sockets.at(-1).emit({tokens:[{text:'Keep me',is_final:false}]})")
+            active.get_by_role('button', name='send', exact=True).click()
+            page.evaluate("sockets.at(-1).emit({error_code:500})")
+            expect(active.get_by_role('button', name='Resume dictation')).to_be_visible()
+            expect(active.get_by_placeholder('Follow up…')).to_have_value('Keep me')
+            assert len(submissions) == 1
+            # Navigating away while waiting for the last words cancels auto-send.
+            active.get_by_role('button', name='Resume dictation').click()
+            expect(active.locator('[data-dictation-state=recording]')).to_be_visible()
+            active.get_by_role('button', name='send', exact=True).click()
+            page.get_by_role('button', name='history', exact=True).click()
+            page.evaluate("sockets.at(-1).emit({finished:true})")
+            page.get_by_role('button', name='Test chat').click()
+            expect(active.get_by_placeholder('Follow up…')).to_have_value('Keep me')
+            assert len(submissions) == 1
+            # Send can finish speech even before the first provisional word arrives.
+            active.get_by_placeholder('Follow up…').fill('')
+            active.get_by_role('button', name='Start dictation').click()
+            expect(active.locator('[data-dictation-state=recording]')).to_be_visible()
+            expect(active.get_by_role('button', name='send', exact=True)).to_be_enabled()
+            active.get_by_role('button', name='send', exact=True).click()
+            page.evaluate("sockets.at(-1).emit({tokens:[{text:'First words',is_final:true}],finished:true})")
+            expect(active.get_by_placeholder('Follow up…')).to_have_value('')
+            expect(active.get_by_role('button', name='send', exact=True)).to_be_disabled()
+            assert len(submissions) == 2 and submissions[-1]['prompt'] == 'First words'
             assert not errors, errors
             browser.close()
     finally:

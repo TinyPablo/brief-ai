@@ -277,6 +277,9 @@
   <style>
     .dictation-button { min-width: 32px; min-height: 32px; gap: 6px; }
     .dictation-button.dictation-active { color: #e4b158; background: rgba(228,177,88,.1); outline: 1px solid rgba(228,177,88,.4); }
+    @keyframes dictation-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(228,177,88,.12); } 50% { box-shadow: 0 0 0 4px rgba(228,177,88,.22); } }
+    .dictation-button.dictation-active { animation: dictation-pulse 1.6s ease-in-out infinite; }
+    @media (prefers-reduced-motion: reduce) { .dictation-button.dictation-active { animation: none; } }
     .dictation-button:focus-visible { outline: 2px solid #e4b158; outline-offset: 2px; }
   </style>
   <script src="/dictation.js"></script>
