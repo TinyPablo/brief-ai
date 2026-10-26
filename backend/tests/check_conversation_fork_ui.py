@@ -1,5 +1,6 @@
 """Browser flow for branching, share scopes and public thread rendering."""
 
+import base64
 import copy
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -32,9 +33,9 @@ def check_fork_ui():
         return dict(id=str(uuid4()), role=role, content=text, model='gemini', model_label='Gemini', created_at=stamp,
                     images=[], input_tokens=10, output_tokens=5, duration_ms=100, cost_usd=0.001)
     turns = [message('user', 'Question A'), message('assistant', 'Answer B'), message('user', 'Question C'), message('assistant', 'Answer D')]
-    original = dict(id=cid, title='Original chat', context='', messages=turns, job={'status': 'completed'})
+    original = dict(id=cid, title='Original chat', context='', revision=0, messages=turns, job={'status': 'completed'})
     chats = {cid: original}
-    share_bodies, branches, errors = [], [], []
+    share_bodies, branches, errors, edits, generations = [], [], [], [], []
     token = 'c_' + 'x' * 22
     payload = None
     def route_api(route):
@@ -62,6 +63,19 @@ def check_fork_ui():
                 m['id'] = str(uuid4())
             chats[fork_id] = copied
             data, status = {'id': fork_id}, 201
+        elif method == 'PATCH' and '/messages/' in path:
+            edits.append(body)
+            chat = chats[path.split('/')[2]]
+            index = next(i for i, m in enumerate(chat['messages']) if m['id'] == path.rsplit('/', 1)[1])
+            chat['messages'] = chat['messages'][:index + 1]
+            chat['messages'][-1].update(content=body['content'], edited_at=stamp)
+            chat['revision'] += 1
+            chat['job'] = None
+            if chat['messages'][-1]['role'] == 'user':
+                generations.append(body)
+                chat['messages'].append(message('assistant', 'Answer to edited question'))
+                chat['job'] = {'status': 'completed'}
+                status = 202
         elif path.startswith('/conversations/'):
             data = chats[path.rsplit('/', 1)[1]]
         elif path.startswith('/conversation-messages/') and path.endswith('/share'):
@@ -129,9 +143,58 @@ def check_fork_ui():
             page.set_viewport_size({'width': 390, 'height': 844})
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Mobile message toolbar overflow'
             page.screenshot(path='/private/tmp/brief-forks-mobile.png', full_page=True)
+            # Cancel leaves the thread intact; user edits regenerate automatically.
+            draft = active.get_by_placeholder('Follow up…')
+            draft.fill('Draft before editing')
+            draft.evaluate('(element) => { element.dataset.originalComposer = "true"; }')
+            png = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j5S8AAAAASUVORK5CYII=')
+            active.locator('input[type=file]').set_input_files({'name': 'photo.png', 'mimeType': 'image/png', 'buffer': png})
+            expect(active.get_by_role('button', name='Remove image 1')).to_be_visible()
+            active.get_by_role('button', name='Edit', exact=True).last.click()
+            expect(active.locator('textarea')).to_have_count(2)
+            expect(active.get_by_placeholder('Follow up…')).to_have_attribute('data-original-composer', 'true')
+            expect(active.get_by_role('textbox', name='Edit message', exact=True)).to_be_focused()
+            expect(active.get_by_text('Generating…', exact=True)).to_have_count(0)
+            expect(active.get_by_role('button', name='Remove image 1')).to_be_visible()
+            active.get_by_role('textbox', name='Edit message', exact=True).fill('Discard this edit')
+            active.get_by_role('button', name='Cancel editing', exact=True).click()
+            expect(active.get_by_text('Answer D', exact=True)).to_be_visible()
+            assert not edits
+            expect(draft).to_have_value('Draft before editing')
+            expect(active.get_by_role('button', name='Remove image 1')).to_be_visible()
+            active.get_by_role('button', name='Edit', exact=True).last.click()
+            active.get_by_role('textbox', name='Edit message', exact=True).fill('Discard with Escape')
+            active.get_by_role('textbox', name='Edit message', exact=True).press('Escape')
+            expect(draft).to_have_value('Draft before editing')
+            expect(active.get_by_role('button', name='Remove image 1')).to_be_visible()
+            assert not edits
+            active.get_by_role('button', name='Edit', exact=True).nth(1).click()
+            active.get_by_role('textbox', name='Edit message', exact=True).fill('Corrected answer B')
+            active.get_by_role('button', name='Save', exact=True).click()
+            expect(active.get_by_text('Corrected answer B', exact=True)).to_be_visible()
+            expect(active.get_by_text('Question C', exact=True)).to_have_count(0)
+            expect(active.get_by_role('button', name='Generate answer', exact=True)).to_have_count(0)
+            expect(active.get_by_role('button', name='Edit', exact=True)).to_have_count(2)
+            expect(draft).to_have_value('Draft before editing')
+            expect(active.get_by_role('button', name='Remove image 1')).to_be_visible()
+            assert len(edits) == 1 and not generations
+            active.get_by_placeholder('Follow up…').fill('Unsent follow-up draft')
+            expect(active.get_by_role('button', name='send', exact=True)).to_be_enabled()
+            active.get_by_role('button', name='Edit', exact=True).first.click()
+            active.get_by_role('textbox', name='Edit message', exact=True).fill('Corrected question A')
+            active.get_by_role('button', name='Save', exact=True).click()
+            expect(active.get_by_text('Corrected answer B', exact=True)).to_have_count(0)
+            expect(active.get_by_text('Answer to edited question', exact=True)).to_be_visible()
+            expect(active.get_by_role('button', name='Generate answer', exact=True)).to_have_count(0)
+            expect(active.get_by_placeholder('Follow up…')).to_have_value('Unsent follow-up draft')
+            expect(active.get_by_role('button', name='Remove image 1')).to_be_visible()
+            assert len(edits) == 2 and len(generations) == 1 and generations[0]['request_id']
+            page.reload()
+            expect(page.get_by_text('Corrected question A', exact=True)).to_be_visible()
+            expect(page.get_by_text('Answer to edited question', exact=True)).to_be_visible()
             assert not errors, errors
             browser.close()
-            print('PASS: branch action/placement, source retained, default full snapshot, all scope controls, public thread and mobile toolbar')
+            print('PASS: branch action/placement, source retained, default full snapshot, all scope controls, public thread, mobile toolbar, edit/cancel/truncation, automatic generation and reload')
     finally:
         server.shutdown()
         server.server_close()

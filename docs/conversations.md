@@ -31,6 +31,69 @@ The provider request may still finish and incur a charge after deletion; its
 result is discarded. Images are deleted only when neither legacy history nor a
 conversation references them.
 
+## Message editing
+
+User and assistant messages are edited inside their own cards. Opening an editor
+keeps the full conversation visible until Save. Leaving the conversation or
+cancelling discards the edit; the independent composer draft and attachments stay
+intact. Only one message can be edited at a time. Sending a new turn is disabled
+while editing, but writing the next draft remains available.
+
+User-message editors support adding and removing images and selecting the reply
+model, initially the model of the original answer. Assistant-message editors
+change text only. Saving an unchanged message does not truncate history, revoke
+links, or generate an answer. Text, attachment order/content and reply-model
+changes count as changes.
+
+Saving a changed message preserves its ID and original timestamp, records
+`edited_at`, and atomically removes all later messages and jobs. User edits queue
+a new answer in the same transaction and update the selected model for subsequent
+turns. Assistant edits leave the next turn to the user. Snapshots containing the
+edited or removed messages are revoked; earlier snapshots and independent branches
+are unaffected. Original generation metrics describe the model call, not manual
+edits. Pending results from an obsolete revision cannot restore removed history.
+
+Edits submit the conversation revision and reject stale revisions with HTTP 409.
+A durable mutation receipt makes repeated saves with the same request ID
+idempotent, including assistant edits and unchanged saves. New image bytes are
+validated before replacement; retained image references must belong to the edited
+message. Unreferenced images are cleaned up without affecting branches or other
+conversations. Image-only user messages are supported for creation, follow-ups and
+edits; a message without text or attachments is rejected.
+
+Deleting a user message is confirmed inline: the trash icon turns red with a small
+question badge and a shrinking five-second ring. A single pulse draws attention;
+the icon does not rotate or indicate completed deletion. Reduced-motion preferences
+disable the pulse and ring animation without changing the confirmation timeout. A second click deletes the message and later turns.
+Clicking elsewhere, moving focus away, Escape, leaving the conversation, or five
+seconds of inactivity restores the trash icon without deleting anything. Pending
+deletions disable repeated clicks and display a spinner in the same button.
+
+## Regeneration and recovery
+
+Assistant-message header actions use icons for Copy, Edit, Regenerate, Branch and
+Share. Regenerate opens one anchored panel with a native model select and confirmation.
+The same select style is used in the prompt composer and message editor. Scrolling
+the conversation dismisses the panel instead of repositioning it.
+Changing the selection does not replace the panel or change the conversation.
+Outside click, Escape and the cancel icon dismiss it without applying changes.
+Confirming removes that assistant response and all later turns, keeps its preceding
+question and images, and atomically queues a replacement using the selected model.
+The selected model also becomes the default for subsequent follow-ups. Regeneration
+uses the same revision checks, durable receipts, share revocation and branch
+independence as editing.
+
+A failed generation displays an explicit Try again action beneath the stored user
+message. It retries the existing job rather than inserting another question.
+Background polling reconnects to pending work after a lost connection. If the
+initial submission acknowledgement is lost, Try again resends the captured request
+with its original request ID so the server returns the same conversation/job.
+An uncertain edit or regeneration keeps its request locked until resolved, allowing
+Try again without silently changing the body of an already accepted request.
+
+Attachment buttons display a paperclip and optional image count. Size and limits
+appear on hover or keyboard focus and close after clicking or changing attachments. The save indicator includes a checkmark.
+
 ## API
 
 All routes require the existing authenticated session.
@@ -42,6 +105,8 @@ All routes require the existing authenticated session.
 | GET | `/api/conversations/<id>` | Read messages, attachment metadata and the latest job |
 | POST | `/api/conversations/<id>/messages` | Append a follow-up after the last assistant response |
 | POST | `/api/conversations/<id>/retry` | Explicitly retry the latest failed job |
+| PATCH | `/api/conversations/<id>/messages/<message_id>` | Edit with `content`, `revision`, `request_id` and optional `model`; truncate later messages and queue a response for user edits |
+| POST | `/api/conversations/<id>/messages/<message_id>/regenerate` | Confirm replacement of an assistant answer with `revision`, `request_id` and `model` |
 | DELETE | `/api/conversations/<id>/messages/<message_id>` | Delete a user message and the rest of the conversation |
 
 Create and append bodies contain `request_id` (a client-generated UUID),
@@ -80,11 +145,14 @@ application data volume; all conversation data is in `db_data`.
 python3 -m pytest backend/tests -q
 PYTHONPATH=backend python3 backend/tests/check_conversation_schema.py
 PYTHONPATH=backend python3 backend/tests/check_conversation_api.py
+PYTHONPATH=backend python3 backend/tests/check_conversation_editing.py
+python3 backend/tests/check_conversation_actions.py
 ```
 
-The last two commands require `DATABASE_URL`. The schema check rolls back its
-transaction. The API check uses and removes an isolated temporary schema, stubs
-providers, and does not issue real model requests. Run these checks against a
+The schema, API and editing checks require `DATABASE_URL`. The schema check rolls back its
+transaction. The API and editing checks use and remove isolated temporary schemas, stub
+providers, and do not issue real model requests. The actions check uses mocked HTTP
+responses in Chrome and verifies editing, regeneration, recovery and mobile layout. Run these checks against a
 local test database.
 
 ## Browser workspace
