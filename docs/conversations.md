@@ -33,20 +33,33 @@ conversation references them.
 
 ## Message editing
 
-Both user and assistant messages can be edited inline. Saving keeps the message
-ID, attachments and original timestamp, records `edited_at`, and deletes every
-later message and job atomically. Existing generation metrics describe the
-original model call, not manually edited text. Independent branches are unaffected.
-Saving, including an unchanged message, does not request a model response.
-Snapshots containing the edited message are revoked; earlier snapshots remain
-available. In-flight results from the previous revision are discarded.
+User and assistant messages are edited inside their own cards. Opening an editor
+keeps the full conversation visible until Save. Leaving the conversation or
+cancelling discards the edit; the independent composer draft and attachments stay
+intact. Only one message can be edited at a time. Sending a new turn is disabled
+while editing, but writing the next draft remains available.
 
-After editing a user message, Generate answer explicitly queues a response using
-the selected model and existing attachments. After editing an assistant message,
-the next action is a normal follow-up. Unsaved composer drafts are preserved.
+User-message editors support adding and removing images and selecting the reply
+model, initially the model of the original answer. Assistant-message editors
+change text only. Saving an unchanged message does not truncate history, revoke
+links, or generate an answer. Text, attachment order/content and reply-model
+changes count as changes.
+
+Saving a changed message preserves its ID and original timestamp, records
+`edited_at`, and atomically removes all later messages and jobs. User edits queue
+a new answer in the same transaction and update the selected model for subsequent
+turns. Assistant edits leave the next turn to the user. Snapshots containing the
+edited or removed messages are revoked; earlier snapshots and independent branches
+are unaffected. Original generation metrics describe the model call, not manual
+edits. Pending results from an obsolete revision cannot restore removed history.
+
 Edits submit the conversation revision and reject stale revisions with HTTP 409.
-An unfinished title request based on the edited first exchange is discarded;
-already saved titles are retained.
+A durable mutation receipt makes repeated saves with the same request ID
+idempotent, including assistant edits and unchanged saves. New image bytes are
+validated before replacement; retained image references must belong to the edited
+message. Unreferenced images are cleaned up without affecting branches or other
+conversations. Image-only user messages are supported for creation, follow-ups and
+edits; a message without text or attachments is rejected.
 
 ## API
 
@@ -59,8 +72,7 @@ All routes require the existing authenticated session.
 | GET | `/api/conversations/<id>` | Read messages, attachment metadata and the latest job |
 | POST | `/api/conversations/<id>/messages` | Append a follow-up after the last assistant response |
 | POST | `/api/conversations/<id>/retry` | Explicitly retry the latest failed job |
-| PATCH | `/api/conversations/<id>/messages/<message_id>` | Edit text with `content` and `revision`, truncating later messages |
-| POST | `/api/conversations/<id>/generate` | Queue an answer to an edited user message using `request_id`, `message_id` and `model` |
+| PATCH | `/api/conversations/<id>/messages/<message_id>` | Edit with `content`, `revision`, `request_id` and optional `model`; truncate later messages and queue a response for user edits |
 | DELETE | `/api/conversations/<id>/messages/<message_id>` | Delete a user message and the rest of the conversation |
 
 Create and append bodies contain `request_id` (a client-generated UUID),

@@ -457,7 +457,7 @@ def validate_images(images):
     return None, decoded
 
 
-def store_images(cur, prompt_id, images, *, conversation=False):
+def store_images(cur, prompt_id, images, *, conversation=False, attach=True):
     """Persist the attachments of one prompt.
 
     Content addressing makes the image insert idempotent: ON CONFLICT DO
@@ -478,6 +478,8 @@ def store_images(cur, prompt_id, images, *, conversation=False):
              psycopg2.Binary(img["thumb"]) if img["thumb"] else None,
              img["thumb_media_type"]),
         )
+        if not attach:
+            continue
         if conversation:
             cur.execute(
                 "INSERT INTO conversation_message_images (message_id, image_sha, position) "

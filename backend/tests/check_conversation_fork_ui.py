@@ -1,5 +1,6 @@
 """Browser flow for branching, share scopes and public thread rendering."""
 
+import base64
 import copy
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -70,12 +71,11 @@ def check_fork_ui():
             chat['messages'][-1].update(content=body['content'], edited_at=stamp)
             chat['revision'] += 1
             chat['job'] = None
-        elif path.endswith('/generate'):
-            generations.append(body)
-            chat = chats[path.split('/')[2]]
-            chat['messages'].append(message('assistant', 'Answer to edited question'))
-            chat['job'] = {'status': 'completed'}
-            data, status = {'id': chat['id']}, 202
+            if chat['messages'][-1]['role'] == 'user':
+                generations.append(body)
+                chat['messages'].append(message('assistant', 'Answer to edited question'))
+                chat['job'] = {'status': 'completed'}
+                status = 202
         elif path.startswith('/conversations/'):
             data = chats[path.rsplit('/', 1)[1]]
         elif path.startswith('/conversation-messages/') and path.endswith('/share'):
@@ -143,11 +143,30 @@ def check_fork_ui():
             page.set_viewport_size({'width': 390, 'height': 844})
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Mobile message toolbar overflow'
             page.screenshot(path='/private/tmp/brief-forks-mobile.png', full_page=True)
-            # Cancel leaves the thread intact; saving never generates a response.
+            # Cancel leaves the thread intact; user edits regenerate automatically.
+            draft = active.get_by_placeholder('Follow up…')
+            draft.fill('Draft before editing')
+            draft.evaluate('(element) => { element.dataset.originalComposer = "true"; }')
+            png = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j5S8AAAAASUVORK5CYII=')
+            active.locator('input[type=file]').set_input_files({'name': 'photo.png', 'mimeType': 'image/png', 'buffer': png})
+            expect(active.get_by_role('button', name='Remove image 1')).to_be_visible()
             active.get_by_role('button', name='Edit', exact=True).last.click()
+            expect(active.locator('textarea')).to_have_count(2)
+            expect(active.get_by_placeholder('Follow up…')).to_have_attribute('data-original-composer', 'true')
+            expect(active.get_by_role('textbox', name='Edit message', exact=True)).to_be_focused()
+            expect(active.get_by_text('Generating…', exact=True)).to_have_count(0)
+            expect(active.get_by_role('button', name='Remove image 1')).to_be_visible()
             active.get_by_role('textbox', name='Edit message', exact=True).fill('Discard this edit')
-            active.get_by_role('button', name='Cancel', exact=True).click()
+            active.get_by_role('button', name='Cancel editing', exact=True).click()
             expect(active.get_by_text('Answer D', exact=True)).to_be_visible()
+            assert not edits
+            expect(draft).to_have_value('Draft before editing')
+            expect(active.get_by_role('button', name='Remove image 1')).to_be_visible()
+            active.get_by_role('button', name='Edit', exact=True).last.click()
+            active.get_by_role('textbox', name='Edit message', exact=True).fill('Discard with Escape')
+            active.get_by_role('textbox', name='Edit message', exact=True).press('Escape')
+            expect(draft).to_have_value('Draft before editing')
+            expect(active.get_by_role('button', name='Remove image 1')).to_be_visible()
             assert not edits
             active.get_by_role('button', name='Edit', exact=True).nth(1).click()
             active.get_by_role('textbox', name='Edit message', exact=True).fill('Corrected answer B')
@@ -156,6 +175,8 @@ def check_fork_ui():
             expect(active.get_by_text('Question C', exact=True)).to_have_count(0)
             expect(active.get_by_role('button', name='Generate answer', exact=True)).to_have_count(0)
             expect(active.get_by_role('button', name='Edit', exact=True)).to_have_count(2)
+            expect(draft).to_have_value('Draft before editing')
+            expect(active.get_by_role('button', name='Remove image 1')).to_be_visible()
             assert len(edits) == 1 and not generations
             active.get_by_placeholder('Follow up…').fill('Unsent follow-up draft')
             expect(active.get_by_role('button', name='send', exact=True)).to_be_enabled()
@@ -163,19 +184,17 @@ def check_fork_ui():
             active.get_by_role('textbox', name='Edit message', exact=True).fill('Corrected question A')
             active.get_by_role('button', name='Save', exact=True).click()
             expect(active.get_by_text('Corrected answer B', exact=True)).to_have_count(0)
-            expect(active.get_by_role('button', name='Generate answer', exact=True)).to_be_visible()
-            assert len(edits) == 2 and not generations
-            expect(active.get_by_placeholder('Follow up…')).to_have_value('Unsent follow-up draft')
-            expect(active.get_by_role('button', name='send', exact=True)).to_be_disabled()
-            active.get_by_role('button', name='Generate answer', exact=True).click()
             expect(active.get_by_text('Answer to edited question', exact=True)).to_be_visible()
-            assert len(generations) == 1 and generations[0]['request_id']
+            expect(active.get_by_role('button', name='Generate answer', exact=True)).to_have_count(0)
+            expect(active.get_by_placeholder('Follow up…')).to_have_value('Unsent follow-up draft')
+            expect(active.get_by_role('button', name='Remove image 1')).to_be_visible()
+            assert len(edits) == 2 and len(generations) == 1 and generations[0]['request_id']
             page.reload()
             expect(page.get_by_text('Corrected question A', exact=True)).to_be_visible()
             expect(page.get_by_text('Answer to edited question', exact=True)).to_be_visible()
             assert not errors, errors
             browser.close()
-            print('PASS: branch action/placement, source retained, default full snapshot, all scope controls, public thread, mobile toolbar, edit/cancel/truncation, explicit generation and reload')
+            print('PASS: branch action/placement, source retained, default full snapshot, all scope controls, public thread, mobile toolbar, edit/cancel/truncation, automatic generation and reload')
     finally:
         server.shutdown()
         server.server_close()

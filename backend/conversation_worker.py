@@ -14,12 +14,12 @@ LOCK_NAMESPACE = 477
 
 
 def load_turns(api, cur, job):
-    cur.execute('SELECT context FROM conversations WHERE id = %s', (str(job['conversation_id']),))
+    cur.execute('SELECT context, revision FROM conversations WHERE id = %s', (str(job['conversation_id']),))
     conversation = cur.fetchone()
     cur.execute('SELECT * FROM conversation_messages WHERE conversation_id = %s ORDER BY position',
                 (str(job['conversation_id']),))
     turns = [dict(row) for row in cur.fetchall()]
-    if not conversation or not turns:
+    if not conversation or conversation['revision'] != job['revision'] or not turns:
         return []
     cur.execute(
         '''SELECT mi.message_id, i.media_type, i.bytes FROM conversation_message_images mi

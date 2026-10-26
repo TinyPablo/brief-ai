@@ -230,6 +230,14 @@
       .conversation-navigation { margin-bottom: 16px; gap: 0 16px; }
       .conversation-navigation > div:first-child, .conversation-navigation > div:last-child { grid-row: 1; position: static; }
     }
+    .message-action { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; color: #9c9286; border-radius: 4px; flex-shrink: 0; }
+    .message-action:hover:not(:disabled) { color: #e8e2d6; background: #ffffff08; }
+    .message-action:disabled { opacity: .4; cursor: default; }
+    .attachment-picker { display: inline-flex; align-items: center; gap: 6px; min-width: 34px; min-height: 36px; color: #9c9286; position: relative; font: 11px 'Space Mono', monospace; }
+    .attachment-picker:hover:not(:disabled) { color: #e8e2d6; }
+    .attachment-picker:disabled { opacity: .4; }
+    .attachment-details { display: none; position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 30; background: #221e17; border: 1px solid #3a3226; padding: 10px 12px; width: 210px; text-align: left; line-height: 1.8; box-shadow: 0 10px 30px #0006; border-radius: 4px; }
+    .attachment-picker:hover .attachment-details, .attachment-picker:focus-visible .attachment-details { display: block; }
   </style>
 </head>
 <body class="font-sans text-[#e6e6ec] antialiased">
