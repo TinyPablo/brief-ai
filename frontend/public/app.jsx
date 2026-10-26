@@ -1128,7 +1128,7 @@ function MessageEditor({ edit, models, limits, onSave, onCancel }) {
       </select><AttachmentPicker images={images} limits={limits} label="Attach images to message" disabled={locked || reading || selected?.supports_images === false} onClick={() => fileInput.current.click()} />
       <input ref={fileInput} type="file" multiple accept={limits.allowed_types.join(',')} className="hidden" onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }} /></>}
       <div className="ml-auto flex gap-2 items-center"><button type="button" className="message-action" aria-label="Cancel editing" title="Cancel · Esc" disabled={saving} onClick={onCancel}><MessageIcon name="close" /></button>
-      <button type="button" className="deck-button primary" disabled={saving || reading || (!content.trim() && (!user || !images.length))} onClick={save}>{saving ? 'Saving…' : uncertain ? 'Try again' : 'Save'}</button></div>
+      <button type="button" className="flex items-center gap-2 bg-accent hover:bg-accent2 disabled:opacity-40 disabled:hover:bg-accent text-accentInk font-mono text-[11px] font-bold px-4 py-1.5 transition-colors" disabled={saving || reading || (!content.trim() && (!user || !images.length))} onClick={save}>{saving ? 'Saving…' : uncertain ? 'Try again' : 'Save'}</button></div>
       <p className="w-full text-[11px] font-mono text-muted">Saving changes removes later messages{user ? ' and generates a new answer.' : '.'}</p>
       {error && <p role="alert" className="w-full text-sm text-bad">{error}</p>}
     </div>
