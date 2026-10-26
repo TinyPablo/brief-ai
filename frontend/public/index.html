@@ -273,6 +273,12 @@
 
   <script src="/conversation-sessions.js"></script>
   <script src="/conversation-navigation.js"></script>
+  <style>
+    .dictation-button { min-width: 32px; min-height: 32px; gap: 6px; }
+    .dictation-button.dictation-active { color: #e4b158; background: rgba(228,177,88,.1); outline: 1px solid rgba(228,177,88,.4); }
+    .dictation-button:focus-visible { outline: 2px solid #e4b158; outline-offset: 2px; }
+  </style>
+  <script src="/dictation.js"></script>
   <script type="text/babel" src="/app.jsx"></script>
 </body>
 </html>

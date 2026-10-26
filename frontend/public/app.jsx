@@ -799,7 +799,7 @@ function TrashIcon() {
   return <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" /></svg>;
 }
 
-function ConversationWorkspace({ models, defaultModel, rate, imageLimits, settings, onUnauth, visible, openRequest, onModelChange, actionsRef, onReady }) {
+function ConversationWorkspace({ models, defaultModel, rate, imageLimits, dictationEnabled, settings, onUnauth, visible, openRequest, onModelChange, actionsRef, onReady }) {
   const [workspace, setWorkspace] = useState(null);
   const [storageError, setStorageError] = useState(false);
   const [closeKey, setCloseKey] = useState(null);
@@ -1031,7 +1031,7 @@ function ConversationWorkspace({ models, defaultModel, rate, imageLimits, settin
     <div className="conversation-stage">
     {workspace.views.map((view) => <div key={view.key} data-conversation-view={view.key} data-conversation-id={view.conversationId || ''} hidden={view.key !== workspace.active}>
       <AskView models={models} model={view.model || defaultModel} setModel={(model) => updateView(view.key, { model })}
-        rate={rate} imageLimits={imageLimits} settings={settings} onUnauth={onUnauth}
+        rate={rate} imageLimits={imageLimits} dictationEnabled={dictationEnabled} settings={settings} onUnauth={onUnauth}
         conversationId={view.conversationId} onConversationChange={changeConversation}
         viewKey={view.key} viewState={view} onViewState={updateView} active={visible && view.key === workspace.active}
         onDeleted={remove} onBranch={(id) => insert(BriefSessions.freshView(id, view.model || defaultModel))} onClose={requestClose} />
@@ -1126,7 +1126,56 @@ function ModelSelect({ models, value, onChange, disabled = false, label = 'Model
   </select>;
 }
 
-function MessageEditor({ edit, models, limits, onSave, onCancel }) {
+function useDictation(value, setValue, active, enabled, onUnauth) {
+  const [status, setStatus] = useState({ state: 'idle', error: '' });
+  const session = useRef(null);
+  const latest = useRef({ value, setValue, onUnauth });
+  latest.current = { value, setValue, onUnauth };
+  const locked = ['starting', 'recording', 'finishing'].includes(status.state);
+  const start = () => {
+    if (!active || !enabled || session.current && ['starting', 'recording', 'finishing'].includes(session.current.state)) return;
+    session.current?.dispose();
+    session.current = new BriefDictation.Session({
+      onText: (text) => latest.current.setValue(text), onState: setStatus,
+      onUnauth: () => latest.current.onUnauth?.(),
+    });
+    session.current.start(latest.current.value);
+  };
+  useEffect(() => { if (!active) session.current?.stop(); }, [active]);
+  useEffect(() => {
+    const stop = () => session.current?.stop();
+    const visibility = () => { if (document.hidden) stop(); };
+    document.addEventListener('visibilitychange', visibility);
+    window.addEventListener('pagehide', stop);
+    return () => {
+      document.removeEventListener('visibilitychange', visibility);
+      window.removeEventListener('pagehide', stop);
+      session.current?.dispose();
+    };
+  }, []);
+  return { ...status, locked, enabled, start, stop: () => session.current?.stop() };
+}
+
+function DictationButton({ dictation, disabled }) {
+  if (!dictation.enabled) return null;
+  const recording = ['starting', 'recording'].includes(dictation.state);
+  const label = recording ? 'Stop dictation' : dictation.state === 'error' ? 'Resume dictation' : 'Start dictation';
+  return <button type="button" className={'message-action dictation-button' + (recording ? ' dictation-active' : '')}
+    aria-label={label} title={label} aria-pressed={recording} disabled={dictation.state === 'finishing' || (!recording && disabled)}
+    onClick={recording ? dictation.stop : dictation.start}>
+    {dictation.state === 'finishing' ? <span className="spinner" /> : recording ? <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" /></svg> : <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true"><rect x="8" y="2" width="8" height="13" rx="4" /><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8" /></svg>}
+    {dictation.state === 'error' && <span className="font-mono text-[10px]">Resume</span>}
+  </button>;
+}
+
+function DictationStatus({ dictation }) {
+  if (!dictation.enabled || dictation.state === 'idle') return null;
+  return <p className={'px-4 pb-2 font-mono text-[11px] ' + (dictation.error ? 'text-bad' : 'text-accent2')} role={dictation.error ? 'alert' : 'status'}>
+    {dictation.error || ({ starting: 'Connecting microphone…', recording: 'Listening · PL / EN', finishing: 'Finishing transcription…' })[dictation.state]}
+  </p>;
+}
+
+function MessageEditor({ edit, models, limits, onSave, onCancel, dictationEnabled, onUnauth }) {
   const [content, setContent] = useState(edit.content);
   const [images, setImages] = useState(edit.images);
   const [model, setModel] = useState(edit.model);
@@ -1146,7 +1195,8 @@ function MessageEditor({ edit, models, limits, onSave, onCancel }) {
     input.scrollTop = input.scrollHeight;
   }, []);
   const user = edit.role === 'user';
-  const locked = saving || uncertain;
+  const dictation = useDictation(content, setContent, true, dictationEnabled && user, onUnauth);
+  const locked = saving || uncertain || dictation.locked;
   const selected = models.find((m) => m.id === model);
   const addFiles = async (files) => {
     if (!user || locked || reading) return;
@@ -1165,7 +1215,7 @@ function MessageEditor({ edit, models, limits, onSave, onCancel }) {
     finally { if (mounted.current) setReading(false); }
   };
   const save = async () => {
-    if (saving || reading || (!content.trim() && (!user || !images.length))) return;
+    if (saving || reading || dictation.locked || (!content.trim() && (!user || !images.length))) return;
     if (!pending.current) pending.current = {
       content, revision: edit.revision, request_id: crypto.randomUUID(),
       ...(user ? { model, images: images.map((im) => im.sha ? { sha: im.sha } : {
@@ -1188,12 +1238,13 @@ function MessageEditor({ edit, models, limits, onSave, onCancel }) {
       onChange={(e) => setContent(e.target.value)}
       onPaste={(e) => { const files = Array.from(e.clipboardData?.items || []).filter((item) => item.type.startsWith('image/')).map((item) => item.getAsFile()).filter(Boolean); if (files.length) addFiles(files); }}
       onKeyDown={(e) => { if (e.key === 'Escape' && !saving) { e.preventDefault(); onCancel(); } else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); save(); } }} />
+    <DictationStatus dictation={dictation} />
     {images.length > 0 && <div className="flex flex-wrap gap-3 px-5 pb-4">{images.map((im, index) => <ImageThumb key={im.id} image={im} images={images} index={index} onRemove={locked || !user ? null : (id) => setImages((previous) => previous.filter((item) => item.id !== id))} />)}</div>}
     <div className="flex flex-wrap gap-3 items-center px-5 pb-4">
       {user && <><ModelSelect models={models} value={model} disabled={locked} onChange={setModel} label="Edit model" /><AttachmentPicker images={images} limits={limits} label="Attach images to message" disabled={locked || reading || selected?.supports_images === false} onClick={() => fileInput.current.click()} />
       <input ref={fileInput} type="file" multiple accept={limits.allowed_types.join(',')} className="hidden" onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }} /></>}
-      <div className="ml-auto flex gap-2 items-center"><button type="button" className="message-action" aria-label="Cancel editing" title="Cancel · Esc" disabled={saving} onClick={onCancel}><MessageIcon name="close" /></button>
-      <button type="button" className="flex items-center gap-2 bg-accent hover:bg-accent2 disabled:opacity-40 disabled:hover:bg-accent text-accentInk font-mono text-[11px] font-bold px-4 py-1.5 transition-colors" disabled={saving || reading || (!content.trim() && (!user || !images.length))} onClick={save}>{saving ? 'Saving…' : uncertain ? 'Try again' : 'Save'}</button></div>
+      <div className="ml-auto flex gap-2 items-center"><DictationButton dictation={dictation} disabled={saving || uncertain || reading} /><button type="button" className="message-action" aria-label="Cancel editing" title="Cancel · Esc" disabled={saving} onClick={onCancel}><MessageIcon name="close" /></button>
+      <button type="button" className="flex items-center gap-2 bg-accent hover:bg-accent2 disabled:opacity-40 disabled:hover:bg-accent text-accentInk font-mono text-[11px] font-bold px-4 py-1.5 transition-colors" disabled={saving || reading || dictation.locked || (!content.trim() && (!user || !images.length))} onClick={save}>{saving ? 'Saving…' : uncertain ? 'Try again' : 'Save'}</button></div>
       <p className="w-full text-[11px] font-mono text-muted">Saving changes removes later messages{user ? ' and generates a new answer.' : '.'}</p>
       {error && <p role="alert" className="w-full text-sm text-bad">{error}</p>}
     </div>
@@ -1265,7 +1316,7 @@ function RegeneratePopover({ selection, models, onConfirm, onClose }) {
   </section>, document.body);
 }
 
-function AskView({ models, model, setModel, rate, imageLimits, settings, onUnauth, conversationId, onConversationChange, viewKey, viewState, onViewState, active, onDeleted, onBranch, onClose }) {
+function AskView({ models, model, setModel, rate, imageLimits, dictationEnabled, settings, onUnauth, conversationId, onConversationChange, viewKey, viewState, onViewState, active, onDeleted, onBranch, onClose }) {
   const limits = imageLimits || DEFAULT_IMAGE_LIMITS;
   const currentModel = models.find((m) => m.id === model) || null;
   const [prompt, setPrompt] = useState(viewState.prompt);
@@ -1298,6 +1349,7 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
   const busy = ['queued', 'running'].includes(conversation?.job?.status);
   const loading = submitting || busy || savingEdit || !!editing || regenerating || !!regenerate;
   const unanswered = conversation?.messages?.at(-1)?.role === 'user';
+  const dictation = useDictation(prompt, setPrompt, active && !editing && !regenerate, dictationEnabled, onUnauth);
 
   useEffect(() => {
     let cancelled = false;
@@ -1462,6 +1514,7 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
   const overLimit = images.length > limits.max_images || totalImageBytes > limits.max_total_mb * 1e6;
 
   const addFiles = async (fileList) => {
+    if (dictation.locked) return;
     if (currentModel?.supports_images === false) {
       setImageError("Local AI supports text only. Paste your code into the prompt.");
       return;
@@ -1523,7 +1576,7 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
   }, [prompt, currentModel, settings, imagesTokenTotal, rate, images.length, conversation]);
 
   const send = async () => {
-    if (loading || restoring || (unanswered && !requestRef.current) || (!requestRef.current?.body && ((!prompt.trim() && !images.length) || overLimit || unsupportedImages))) return;
+    if (dictation.locked || loading || restoring || (unanswered && !requestRef.current) || (!requestRef.current?.body && ((!prompt.trim() && !images.length) || overLimit || unsupportedImages))) return;
     setSubmitting(true); setError('');
     const body = {
       model, prompt: prompt.trim(), brief: true,
@@ -1574,7 +1627,7 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
     }
   };
 
-  const sendDisabled = loading || restoring || unanswered || (!prompt.trim() && !images.length) || overLimit || unsupportedImages;
+  const sendDisabled = dictation.locked || loading || restoring || unanswered || (!prompt.trim() && !images.length) || overLimit || unsupportedImages;
 
   return (
     <div className="space-y-4">
@@ -1596,7 +1649,7 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
               </>}
             </div>
           </div>
-          {editing?.id === message.id ? <MessageEditor key={editing.id} edit={editing} models={models} limits={limits} onSave={saveEdit} onCancel={() => setEditing(null)} /> : <div className="p-5">
+          {editing?.id === message.id ? <MessageEditor key={editing.id} edit={editing} models={models} limits={limits} onSave={saveEdit} onCancel={() => setEditing(null)} dictationEnabled={dictationEnabled} onUnauth={onUnauth} /> : <div className="p-5">
             {message.role === 'user' ? <div className="whitespace-pre-wrap break-words">{message.content}</div> : <><Meta result={{ ...message, model_label: models.find((m) => m.id === message.model)?.label || message.model }} rate={rate} /><Markdown text={message.content} /></>}
             {!!message.images?.length && <div className="mt-3"><AttachmentStrip images={message.images} size={64} /></div>}
           </div>}
@@ -1612,16 +1665,17 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
         <div className="flex items-center justify-between px-4 py-2 border-b border-edge">
           <span className="font-mono text-[10px] tracking-widest text-muted/80 uppercase">prompt</span>
         </div>
-        <textarea value={prompt} disabled={submitting} onChange={(e) => setPrompt(e.target.value)} onKeyDown={onKeyDown} onPaste={onTextareaPaste}
+        <textarea value={prompt} disabled={submitting || dictation.locked} onChange={(e) => setPrompt(e.target.value)} onKeyDown={onKeyDown} onPaste={onTextareaPaste}
           placeholder={conversationId ? 'Follow up…' : 'Ask anything…'} rows={3}
           className="w-full bg-transparent resize-y outline-none px-4 pt-3 pb-1 text-[0.95rem] placeholder:text-muted/70 min-h-[4.5rem]" />
+        <DictationStatus dictation={dictation} />
         {images.length > 0 && <div className="flex flex-wrap gap-2.5 px-4 pt-3 pb-1">{images.map((im, index) => <ImageThumb key={im.id} image={im} images={images} index={index} onRemove={removeImage} />)}</div>}
 
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 border-t border-edge font-mono text-[11px] text-muted">
           <ModelSelect models={models} value={model} onChange={setModel} />
 
 
-          <AttachmentPicker images={images} limits={limits} disabled={currentModel?.supports_images === false} onClick={() => fileInputRef.current?.click()} />
+          <AttachmentPicker images={images} limits={limits} disabled={dictation.locked || currentModel?.supports_images === false} onClick={() => fileInputRef.current?.click()} />
           <input
             ref={fileInputRef}
             type="file"
@@ -1632,12 +1686,13 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
           />
 
           <div className="ml-auto flex items-center gap-3">
+            <DictationButton dictation={dictation} disabled={loading || restoring || !!viewState.pendingRequest} />
             {estimate != null && (
               <span className="text-muted/70 whitespace-nowrap">est_in: {zl(estimate)}</span>
             )}
             <button
               onClick={clearAll}
-              disabled={!prompt && !error && images.length === 0}
+              disabled={dictation.locked || (!prompt && !error && images.length === 0)}
               title="Clear"
               className="text-muted hover:text-white disabled:opacity-40 p-1 transition-colors"
             >
@@ -2149,6 +2204,7 @@ function Main({ onLogout }) {
   const [defaultModel, setDefaultModel] = useState('');
   const [rate, setRate] = useState(1);
   const [imageLimits, setImageLimits] = useState(null);
+  const [dictationEnabled, setDictationEnabled] = useState(false);
   const [settings, setSettings] = useState(loadSettings);
 
   useEffect(() => {
@@ -2159,6 +2215,7 @@ function Main({ onLogout }) {
       setDefaultModel(d.default);
       setRate(d.usd_pln || 1);
       setImageLimits(d.image_limits || null);
+      setDictationEnabled(!!d.dictation?.enabled);
     });
   }, []);
 
@@ -2236,7 +2293,7 @@ function Main({ onLogout }) {
           <div className={tab === 'ask' ? 'flex gap-8 items-start' : 'hidden'}>
             <div className="flex-1 min-w-0">
               <ConversationWorkspace models={models} defaultModel={defaultModel || models[0].id} rate={rate}
-                imageLimits={imageLimits} settings={settings} onUnauth={unauth} visible={tab === 'ask'}
+                imageLimits={imageLimits} dictationEnabled={dictationEnabled} settings={settings} onUnauth={unauth} visible={tab === 'ask'}
                 openRequest={openRequest} actionsRef={workspaceActions} onReady={setWorkspaceReady} onModelChange={setModel} />
             </div>
           </div>
