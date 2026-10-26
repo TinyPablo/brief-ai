@@ -3,6 +3,7 @@
 from uuid import UUID, uuid4
 
 from flask import jsonify, request
+from psycopg2.extras import Json
 from conversations import database
 
 
@@ -45,11 +46,11 @@ def register_branches(app, api):
                 cur.execute(
                     '''INSERT INTO conversation_messages
                        (id, conversation_id, position, role, content, created_at, model, brief,
-                        input_tokens, output_tokens, cost_usd, duration_ms, stop_reason, reasoning, edited_at, inherited)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE)''',
+                        input_tokens, output_tokens, cost_usd, duration_ms, stop_reason, reasoning, edited_at, charts, inherited)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE)''',
                     (new_id, destination, message['position'], message['role'], message['content'],
                      message['created_at'], message['model'], message['brief'], message['input_tokens'],
-                     message['output_tokens'], message['cost_usd'], message['duration_ms'], message['stop_reason'], message['reasoning'], message['edited_at']),
+                     message['output_tokens'], message['cost_usd'], message['duration_ms'], message['stop_reason'], message['reasoning'], message['edited_at'], Json(message.get('charts', []))),
                 )
                 cur.execute(
                     '''INSERT INTO conversation_message_images(message_id, image_sha, position)

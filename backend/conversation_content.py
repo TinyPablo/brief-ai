@@ -2,11 +2,15 @@
 
 import base64
 
+from charts import chart_context
+
 
 def provider_messages(turns, provider):
     messages = []
     for turn in turns:
         role, text = turn['role'], turn['content']
+        if role == 'assistant':
+            text += chart_context(turn.get('charts', []))
         parts = []
         for image in turn.get('images', []):
             raw = image['raw']

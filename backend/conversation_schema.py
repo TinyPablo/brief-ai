@@ -138,3 +138,8 @@ CONVERSATION_MIGRATIONS += (
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )""",
 )
+
+CONVERSATION_MIGRATIONS += (
+    """ALTER TABLE conversation_messages ADD COLUMN IF NOT EXISTS charts JSONB
+       NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(charts) = 'array')""",
+)
