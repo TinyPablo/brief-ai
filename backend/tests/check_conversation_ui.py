@@ -126,8 +126,8 @@ def check_ui():
             assert shares and shares[0]['scope'] == 'conversation'
             page.get_by_role('button', name='Close dialog').click()
             page.get_by_role('button', name='Delete message and later replies').last.click()
-            expect(page.get_by_role('dialog')).to_be_visible()
-            page.get_by_role('button', name='Delete', exact=True).click()
+            expect(page.get_by_role('dialog')).to_have_count(0)
+            page.get_by_role('button', name='Confirm deletion of message and later replies').click()
             expect(active.get_by_text('Follow-up question', exact=True)).to_have_count(0)
             expect(active.get_by_text('Answer 1', exact=True)).to_be_visible()
             # The history opens a saved conversation; old entries keep their existing view.

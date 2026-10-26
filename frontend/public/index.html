@@ -246,6 +246,10 @@
     .corner-panel:has(> .message-editor) { border-color: #e6a84a80; }
     .message-editor { border-top: 1px solid #e6a84a30; }
     @media (max-width: 640px) { .message-actions { gap: 0; } .message-action { width: 32px; } .message-toolbar > time { font-size: 10px; } }
+    .message-action.delete-confirm, .message-action.delete-confirm:hover:not(:disabled) { color: #dc5b45; background: #dc5b4518; box-shadow: inset 0 0 0 1px #dc5b4540; }
+    .delete-action-icon { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; animation: delete-action-reveal .14s ease-out; }
+    @keyframes delete-action-reveal { from { opacity: .35; transform: scale(.8); } to { opacity: 1; transform: scale(1); } }
+    @media (prefers-reduced-motion: reduce) { .delete-action-icon { animation: none; } }
   </style>
 </head>
 <body class="font-sans text-[#e6e6ec] antialiased">

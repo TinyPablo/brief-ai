@@ -31,7 +31,7 @@ def check_actions():
     cid = str(uuid4())
     original = dict(id=cid, title='Original chat', revision=0, messages=[message('user', 'Question A'), message('assistant', 'Answer B'), message('user', 'Question C'), message('assistant', 'Answer D')], job={'status': 'completed'})
     chats = {cid: original}
-    receipts, edits, regenerations, submissions, retries, errors = {}, [], [], [], [], []
+    receipts, edits, regenerations, submissions, retries, errors, deletions = {}, [], [], [], [], [], []
     abort_once = {'edit': False, 'send': False}
     def images_from_body(images):
         return [dict(sha=image['sha'], byte_size=68, media_type='image/png', has_thumb=False, width=1, height=1) if 'sha' in image else dict(sha=hashlib.sha256(base64.b64decode(image['data'])).hexdigest(), byte_size=len(base64.b64decode(image['data'])), media_type=image['media_type'], width=1, height=1, has_thumb=False) for image in images]
@@ -123,6 +123,13 @@ def check_actions():
                     route.fulfill(status=502, content_type='application/json', body=json.dumps({'error': 'Temporary gateway error'}))
                     return
             status = 202
+        elif method == 'DELETE' and '/messages/' in path:
+            deletions.append(path)
+            chat = chats[path.split('/')[2]]
+            index = next(i for i, m in enumerate(chat['messages']) if m['id'] == path.rsplit('/', 1)[1])
+            chat['messages'] = chat['messages'][:index]
+            chat['job'] = {'status': 'completed'}
+            data = {'ok': True, 'deleted_conversation': index == 0}
         elif path.startswith('/conversations/'):
             data = chats[path.split('/')[2]]
         else:
@@ -143,6 +150,30 @@ def check_actions():
             active = page.locator('[data-conversation-view]:not([hidden])')
             draft = active.get_by_placeholder('Follow up…')
             draft.fill('Keep this draft')
+            trash = active.get_by_role('button', name='Delete message and later replies').first
+            trash.evaluate('(element) => { element.dataset.confirmationTarget = "original"; }')
+            trash.scroll_into_view_if_needed()
+            before_delete = trash.bounding_box()
+            trash.click()
+            confirmation = active.get_by_role('button', name='Confirm deletion of message and later replies')
+            expect(confirmation).to_have_attribute('data-confirmation-target', 'original')
+            after_delete = confirmation.bounding_box()
+            assert all(abs(after_delete[key] - before_delete[key]) < 1 for key in before_delete), (before_delete, after_delete)
+            expect(page.get_by_role('dialog')).to_have_count(0)
+            assert not deletions and len(original['messages']) == 4
+            draft.click()
+            expect(confirmation).to_have_count(0)
+            trash.click()
+            page.keyboard.press('Escape')
+            expect(confirmation).to_have_count(0)
+            trash.click()
+            expect(confirmation).to_be_visible()
+            expect(confirmation).to_have_count(0, timeout=6500)
+            assert not deletions
+            trash.click()
+            page.get_by_role('button', name='history', exact=True).click()
+            page.get_by_role('button', name='Original chat').click()
+            expect(confirmation).to_have_count(0)
             active.get_by_role('button', name='Edit', exact=True).first.click()
             expect(active.get_by_role('textbox', name='Edit message')).to_have_value('Question A')
             assert active.get_by_role('textbox', name='Edit message').evaluate('(element) => element.selectionStart === element.value.length && element.selectionEnd === element.value.length')
@@ -262,9 +293,13 @@ def check_actions():
             active.get_by_role('button', name='send', exact=True).click()
             expect(active.get_by_text('Answer to image', exact=True)).to_have_count(2)
             assert len(submissions) == 2 and submissions[-1]['prompt'] == ''
+            active.get_by_role('button', name='Delete message and later replies').last.click()
+            active.get_by_role('button', name='Confirm deletion of message and later replies').click()
+            expect(active.get_by_text('Answer to image', exact=True)).to_have_count(1)
+            assert len(deletions) == 1
             assert not errors, errors
             browser.close()
-            print('PASS: inline edit/no-op/cancel, attachments, independent draft, model selection, stable regeneration popover, recovery, image-only turns and mobile bounds')
+            print('PASS: inline edit/no-op/cancel, attachments, independent draft, model selection, stable regeneration popover, recovery, image-only turns, inline delete confirmation/expiry/cancellation and mobile bounds')
     finally:
         server.shutdown()
         server.server_close()

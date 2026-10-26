@@ -1070,6 +1070,52 @@ function AttachmentPicker({ images, limits, onClick, disabled, label = 'Attach i
   </button>;
 }
 
+function InlineDeleteButton({ active, disabled, onDelete }) {
+  const [armed, setArmed] = useState(false);
+  const [pending, setPending] = useState(false);
+  const button = useRef(null);
+  const deadline = useRef(0);
+  const busy = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
+  useEffect(() => {
+    const cancel = () => { deadline.current = 0; setArmed(false); };
+    if (!active || disabled) { cancel(); return; }
+    if (!armed) return;
+    const outside = (event) => { if (!busy.current && !button.current?.contains(event.target)) cancel(); };
+    const escape = (event) => { if (event.key === 'Escape' && !busy.current) cancel(); };
+    const leave = () => { if (!busy.current) cancel(); };
+    const timer = setTimeout(cancel, Math.max(0, deadline.current - performance.now()));
+    document.addEventListener('pointerdown', outside, true);
+    document.addEventListener('keydown', escape);
+    window.addEventListener('blur', leave);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('pointerdown', outside, true);
+      document.removeEventListener('keydown', escape);
+      window.removeEventListener('blur', leave);
+    };
+  }, [armed, active, disabled]);
+  const click = async () => {
+    if (disabled || busy.current) return;
+    if (!armed || performance.now() >= deadline.current) {
+      deadline.current = performance.now() + 5000;
+      setArmed(true);
+      return;
+    }
+    busy.current = true; setPending(true); setArmed(false); deadline.current = 0;
+    try { await onDelete(); }
+    finally { busy.current = false; if (mounted.current) setPending(false); }
+  };
+  const label = pending ? 'Deleting message and later replies' : armed ? 'Confirm deletion of message and later replies' : 'Delete message and later replies';
+  return <button ref={button} type="button" className={'message-action' + (armed ? ' delete-confirm' : '')} aria-label={label} aria-pressed={armed}
+    title={armed ? 'Confirm: delete this message and all later replies · Esc to cancel' : label}
+    disabled={disabled || pending} onClick={click} onBlur={() => { if (!busy.current) { deadline.current = 0; setArmed(false); } }}>
+    <span key={pending ? 'pending' : armed ? 'confirm' : 'trash'} className="delete-action-icon">{pending ? <span className="spinner" /> : armed ? <MessageIcon name="check" /> : <TrashIcon />}</span>
+    <span className="sr-only" role="status">{armed ? 'Click again to delete this message and all later replies. Confirmation expires in five seconds.' : ''}</span>
+  </button>;
+}
+
 function ModelSelect({ models, value, onChange, disabled = false, label = 'Model' }) {
   return <select aria-label={label} className="model-select" value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
     {!models.some((m) => m.id === value) && <option value={value}>{value} · unavailable</option>}
@@ -1231,7 +1277,6 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
   const [error, setError] = useState('');
   const [refresh, setRefresh] = useState(0);
   const [deleting, setDeleting] = useState(false);
-  const [deleteMessage, setDeleteMessage] = useState(null);
   const [editing, setEditing] = useState(null);
   const [savingEdit, setSavingEdit] = useState(false);
   const [regenerate, setRegenerate] = useState(null);
@@ -1392,14 +1437,13 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
     finally { setRegenerating(false); }
   };
 
-  const truncate = async () => {
+  const truncate = async (messageId) => {
     setDeleting(true); setError('');
     try {
-      const res = await api('/conversations/' + conversationId + '/messages/' + deleteMessage, { method: 'DELETE' });
+      const res = await api('/conversations/' + conversationId + '/messages/' + messageId, { method: 'DELETE' });
       if (res.status === 401) { unauthRef.current(); return; }
       const data = await res.json();
       if (!res.ok) throw new Error('Could not delete the message.');
-      setDeleteMessage(null);
       if (data.deleted_conversation) onDeleted(viewKey);
       else setRefresh((x) => x + 1);
     } catch (e) { setError(e.message); }
@@ -1542,7 +1586,7 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
             <div className="message-actions ml-auto flex items-center gap-1">
               <button type="button" className="message-action" aria-label="Copy" title={copied === message.id ? 'Copied' : 'Copy'} onClick={async () => { try { await navigator.clipboard.writeText(message.content); setCopied(message.id); setTimeout(() => setCopied(null), 1500); } catch { setError('Clipboard is unavailable. Select the message to copy it.'); } }}><MessageIcon name={copied === message.id ? 'check' : 'copy'} /></button>
               <button type="button" className="message-action" aria-label="Edit" title="Edit" disabled={submitting || deleting || !!editing || !!regenerate || regenerating} onClick={() => startEditing(message)}><MessageIcon name="edit" /></button>
-              {message.role === 'user' ? <button type="button" className="message-action" aria-label="Delete message and later replies" title="Delete message and later replies" disabled={deleting || !!editing || !!regenerate} onClick={() => setDeleteMessage(message.id)}><TrashIcon /></button> : <>
+              {message.role === 'user' ? <InlineDeleteButton active={active} disabled={deleting || !!editing || !!regenerate} onDelete={() => truncate(message.id)} /> : <>
                 <button type="button" className="message-action" aria-label="Regenerate" title="Regenerate" disabled={!!editing || !!regenerate || submitting || regenerating} onClick={(e) => setRegenerate({ id: message.id, model: message.model, revision: conversation.revision, anchor: e.currentTarget, rect: e.currentTarget.getBoundingClientRect() })}><MessageIcon name="regenerate" /></button>
                 <button type="button" className="message-action" aria-label="Branch" title={branching === message.id ? 'Creating branch…' : 'Branch'} disabled={!!branching || !!editing || !!regenerate} onClick={() => branch(message.id)}><MessageIcon name="branch" /></button>
                 <button type="button" className="message-action" aria-label="Share" title="Share" disabled={!!editing || !!regenerate} onClick={() => setShareMessage(message.id)}><MessageIcon name="share" /></button>
@@ -1557,7 +1601,6 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
       ))}
       {regenerate && <RegeneratePopover key={regenerate.id} selection={regenerate} models={models} onConfirm={confirmRegenerate} onClose={() => setRegenerate(null)} />}
       {conversation?.job?.status === 'failed' && unanswered && <div role="alert" className="border border-bad/40 p-4 text-sm flex flex-wrap items-center justify-between gap-3"><p>{conversation.job.error_detail}</p><button type="button" className="deck-button gap-2" onClick={retry} disabled={loading}><MessageIcon name="regenerate" />Try again</button></div>}
-      {deleteMessage && <Modal title="Delete from this message?" onClose={() => { if (!deleting) setDeleteMessage(null); }}><p className="text-sm text-muted">This message and all later replies will be deleted.</p><div className="flex gap-3 mt-6"><button type="button" className="deck-button" disabled={deleting} onClick={() => setDeleteMessage(null)}>Keep messages</button><button type="button" className="deck-button danger" disabled={deleting} onClick={truncate}>{deleting ? 'Deleting…' : 'Delete'}</button></div></Modal>}
       <div
         className="corner-panel border border-edge bg-panel focus-within:border-accent/60 transition-colors"
         onDrop={onDrop}
