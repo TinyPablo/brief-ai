@@ -44,3 +44,36 @@ Provider protocol references:
 [OpenAI function calling](https://developers.openai.com/api/docs/guides/function-calling),
 [Anthropic tool results](https://platform.claude.com/docs/en/agents-and-tools/tool-use/handle-tool-calls),
 [Gemini function calling](https://ai.google.dev/gemini-api/docs/function-calling).
+
+## Display and verification
+
+Charts appear after the Markdown answer in the existing conversation layout.
+Each chart supports series visibility and pointer/touch value inspection. A
+keyboard-accessible `View data` control exposes all values in a semantic table.
+Illustrative data and assumptions remain visible on both private and public pages.
+All chart assets are local; rendering requires no CDN or additional service.
+
+Run unit and provider-contract tests without contacting model APIs:
+
+```bash
+python3 -m pytest backend/tests -q
+python3 backend/tests/check_charts_ui.py
+```
+
+The browser check requires Playwright and Google Chrome. It covers saved history,
+refresh, anonymous sharing, all chart types, negative values, series toggles,
+keyboard controls and mobile widths down to 320px.
+
+With `DATABASE_URL`, `TOTP_SECRET` and `SECRET_KEY` set for a disposable local
+database, run:
+
+```bash
+PYTHONPATH=backend python3 backend/tests/check_charts_storage.py
+PYTHONPATH=backend python3 backend/tests/check_conversation_schema.py
+```
+
+The storage check creates and removes its own schema and uses fake providers.
+It covers all share scopes, immutable snapshots, copied conversations, chart
+context after changing models, edit revocation and independent deletion.
+Provider-contract tests check request and continuation formats with mocked SDK
+responses; actual tool selection and output quality require live model validation.

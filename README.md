@@ -42,6 +42,9 @@ persistent session, so you log in once and stay in across tabs.
   the question you actually asked and the personal bits stay separable.
 - Live cost estimate (input only - text + attached images) from the prompt before sending.
 - Rendered Markdown answers with LaTeX math, syntax-highlighted code, and per-block copy buttons.
+- Automatically selected bar, line and scatter charts, with series controls and
+  value inspection. Charts persist in saved conversations, branches and public
+  share snapshots. See [chart behavior and verification](docs/charts.md).
 - Shows generation time, input/output tokens, and price (in PLN) per prompt.
 - Prompt history stored in PostgreSQL - grouped by week/day (collapsible), full-text
   search, infinite scroll, and per-conversation delete.

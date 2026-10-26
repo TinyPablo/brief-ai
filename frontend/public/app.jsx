@@ -118,6 +118,11 @@ function Markdown({ text }) {
   return <div ref={ref} className="md" dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
+function RichAnswer({ text, charts }) {
+  const { AnswerCharts } = window.BriefCharts;
+  return <><Markdown text={text} /><AnswerCharts charts={charts} /></>;
+}
+
 function Meta({ result, rate, onCopy, copied }) {
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[11px] text-muted border-b border-edge pb-3 mb-4">
@@ -484,7 +489,7 @@ function SharedView({ token }) {
         {data.messages ? <div className="space-y-4">
           {data.messages.map((message, index) => <section key={index} className={'corner-panel border border-edge p-5 ' + (message.role === 'user' ? 'bg-panel2' : 'bg-panel')}>
             <div className="font-mono text-[11px] text-muted mb-4 flex flex-wrap gap-3"><span>{message.role === 'user' ? 'You' : message.model_label}</span><time dateTime={message.created_at}>{fmtTime(message.created_at)}</time></div>
-            {message.role === 'user' ? <div className="whitespace-pre-wrap break-words">{message.content}</div> : <Markdown text={message.content} />}
+            {message.role === 'user' ? <div className="whitespace-pre-wrap break-words">{message.content}</div> : <RichAnswer text={message.content} charts={message.charts} />}
             {!!message.images?.length && <div className="mt-3"><AttachmentStrip images={message.images} size={76} base={'/api/share/' + token + '/images/'} /></div>}
           </section>)}
         </div> : <div className="corner-panel bg-panel border border-edge rounded-2xl p-5">
@@ -503,7 +508,7 @@ function SharedView({ token }) {
             <span>response</span>
             <span className="ml-auto normal-case text-accent2 text-[11px]">{data.model_label}</span>
           </div>
-          <Markdown text={data.answer} />
+          <RichAnswer text={data.answer} charts={data.charts} />
         </div>}
       </div>
     </div>
@@ -1567,7 +1572,7 @@ function AskView({ models, model, setModel, rate, imageLimits, dictationEnabled,
 
   const estimate = useMemo(() => {
     if (!currentModel) return null;
-    const historyChars = (conversation?.messages || []).reduce((total, m) => total + m.content.length, 0);
+    const historyChars = (conversation?.messages || []).reduce((total, m) => total + m.content.length + JSON.stringify(m.charts || []).length, 0);
     const chars = historyChars + (conversation ? (conversation.context || '').length + prompt.length + 12 : estimateChars(prompt, settings, true));
     if (!prompt.trim() && images.length === 0) return null;
     const historyImages = (conversation?.messages || []).flatMap((m) => m.images || []).reduce((total, im) => total + imageTokenEstimate(im.width, im.height), 0);
@@ -1650,7 +1655,7 @@ function AskView({ models, model, setModel, rate, imageLimits, dictationEnabled,
             </div>
           </div>
           {editing?.id === message.id ? <MessageEditor key={editing.id} edit={editing} models={models} limits={limits} onSave={saveEdit} onCancel={() => setEditing(null)} dictationEnabled={dictationEnabled} onUnauth={onUnauth} /> : <div className="p-5">
-            {message.role === 'user' ? <div className="whitespace-pre-wrap break-words">{message.content}</div> : <><Meta result={{ ...message, model_label: models.find((m) => m.id === message.model)?.label || message.model }} rate={rate} /><Markdown text={message.content} /></>}
+            {message.role === 'user' ? <div className="whitespace-pre-wrap break-words">{message.content}</div> : <><Meta result={{ ...message, model_label: models.find((m) => m.id === message.model)?.label || message.model }} rate={rate} /><RichAnswer text={message.content} charts={message.charts} /></>}
             {!!message.images?.length && <div className="mt-3"><AttachmentStrip images={message.images} size={64} /></div>}
           </div>}
         </div>
@@ -2145,7 +2150,7 @@ function HistoryView({ rate, onUnauth, sharedOnly = false }) {
             {!detail.context && <div className="mb-5" />}
             <div className="text-xs uppercase tracking-wide text-muted mb-2">Answer</div>
             <Meta result={detail} rate={rate} />
-            <Markdown text={detail.answer} />
+            <RichAnswer text={detail.answer} charts={detail.charts} />
           </div>
         </div>
       )}
