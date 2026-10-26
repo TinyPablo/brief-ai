@@ -22,6 +22,7 @@ from google import genai
 from google.genai import types as genai_types
 from openai import OpenAI
 import local_inference
+import dictation
 
 TOTP_SECRET = os.environ.get("TOTP_SECRET", "")
 if not re.fullmatch(r"[A-Z2-7]+=*", TOTP_SECRET):
@@ -559,7 +560,7 @@ def require_auth(view):
     return wrapper
 
 
-def call_anthropic(model, prompt, depth, images=None, messages=None, output_limit=None, system_prompt=None):
+def call_anthropic(model, prompt, depth, images=None, messages=None, output_limit=None, system_prompt=None, chart_tools=False):
     if anthropic_client is None:
         raise RuntimeError("ANTHROPIC_API_KEY is not configured")
     cfg = MODELS[model]
@@ -582,19 +583,20 @@ def call_anthropic(model, prompt, depth, images=None, messages=None, output_limi
         if reasoning.get("thinking"):
             kwargs["thinking"] = {"type": "adaptive"}
 
-    if model == "claude-fable-5":
-        try:
-            # "default" routes by refusal category server-side, so there is no
-            # fallback model list to keep in sync with MODEL_ORDER.
-            resp = anthropic_client.beta.messages.create(
-                betas=["server-side-fallback-2026-07-01"],
-                fallbacks="default",
-                **kwargs,
-            )
-        except TypeError:
-            resp = anthropic_client.messages.create(**kwargs)
-    else:
-        resp = anthropic_client.messages.create(**kwargs)
+    def send(arguments):
+        if model == "claude-fable-5":
+            try:
+                return anthropic_client.beta.messages.create(
+                    betas=["server-side-fallback-2026-07-01"], fallbacks="default", **arguments,
+                )
+            except TypeError:
+                return anthropic_client.messages.create(**arguments)
+        return anthropic_client.messages.create(**arguments)
+
+    if chart_tools:
+        from chart_generation import anthropic_generate
+        return anthropic_generate(send, kwargs, {**MODELS, '__default__': cfg})
+    resp = send(kwargs)
 
     if resp.stop_reason == "refusal":
         answer = "_The model declined to answer this request._"
@@ -615,7 +617,7 @@ def call_anthropic(model, prompt, depth, images=None, messages=None, output_limi
 
 
 
-def call_gemini(model, prompt, depth, images=None, messages=None, output_limit=None, system_prompt=None):
+def call_gemini(model, prompt, depth, images=None, messages=None, output_limit=None, system_prompt=None, chart_tools=False):
     if gemini_client is None:
         raise RuntimeError("GEMINI_API_KEY is not configured")
 
@@ -632,6 +634,12 @@ def call_gemini(model, prompt, depth, images=None, messages=None, output_limit=N
         for img in images or []
     ]
     contents.append(prompt)
+
+    if chart_tools:
+        from chart_generation import google_generate
+        return google_generate(gemini_client, genai_types, model,
+                               messages if messages is not None else contents, config_args,
+                               {**MODELS, '__default__': MODELS[model]})
 
     resp = gemini_client.models.generate_content(
         model=model,
@@ -666,7 +674,7 @@ def call_gemini(model, prompt, depth, images=None, messages=None, output_limit=N
     }
 
 
-def call_openai(model, prompt, depth, images=None, messages=None, output_limit=None, system_prompt=None):
+def call_openai(model, prompt, depth, images=None, messages=None, output_limit=None, system_prompt=None, chart_tools=False):
     if openai_client is None:
         raise RuntimeError("OPENAI_API_KEY is not configured")
 
@@ -675,6 +683,14 @@ def call_openai(model, prompt, depth, images=None, messages=None, output_limit=N
         for img in images or []
     ]
     user_content.append({"type": "text", "text": prompt})
+
+    if chart_tools:
+        from chart_generation import openai_generate
+        return openai_generate(openai_client, model,
+                               messages if messages is not None else [{"role": "user", "content": user_content}],
+                               system_prompt if system_prompt is not None else SYSTEM_PROMPT,
+                               output_limit or MAX_TOKENS, MODELS[model].get('reasoning', {}).get(depth),
+                               {**MODELS, '__default__': MODELS[model]})
 
     kwargs = dict(
         model=model,
@@ -777,6 +793,7 @@ def config():
         })
     return jsonify(
         models=models,
+        dictation={"enabled": dictation.enabled(), "provider": "soniox"},
         default=DEFAULT_MODEL,
         usd_pln=USD_TO_PLN,
         max_tokens=MAX_TOKENS,
@@ -1206,6 +1223,7 @@ def local_api():
 
 
 from conversations import register_routes
+dictation.register_routes(app, require_auth)
 from conversation_sharing import register_sharing
 from conversation_branches import register_branches
 register_routes(app, sys.modules[__name__])

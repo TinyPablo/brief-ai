@@ -6,6 +6,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
+from psycopg2.extras import Json
+
+from charts import validate_charts
+
 from conversation_content import provider_messages
 from conversations import database
 
@@ -46,17 +50,19 @@ def generate(api, job, turns):
     provider = api.MODELS[model]['provider']
     messages = provider_messages(turns, provider)
     if provider == 'local':
+        from chart_generation import LOCAL_CHART_INSTRUCTIONS, extract_local_charts
         response = api.local_inference.generate([
-            {'role': 'system', 'content': api.SYSTEM_PROMPT}, *messages,
+            {'role': 'system', 'content': api.SYSTEM_PROMPT + '\n\n' + LOCAL_CHART_INSTRUCTIONS}, *messages,
         ])
         choice = response['choices'][0]
-        return dict(answer=choice['message']['content'] or '_No response._',
+        answer, charts = extract_local_charts(choice['message']['content'] or '')
+        return dict(answer=answer, charts=charts,
                     input_tokens=response['usage']['prompt_tokens'],
                     output_tokens=response['usage']['completion_tokens'],
                     stop_reason=choice['finish_reason'], served=model)
     call = {'anthropic': api.call_anthropic, 'google': api.call_gemini,
             'openai': api.call_openai}[provider]
-    return call(model, '', api.DEFAULT_DEPTH, messages=messages)
+    return call(model, '', api.DEFAULT_DEPTH, messages=messages, chart_tools=True)
 
 
 def recover_interrupted(api):
@@ -78,6 +84,7 @@ def recover_interrupted(api):
 
 
 def finish(api, job, result=None, duration_ms=0, error=None):
+    charts = validate_charts(result.get('charts', [])) if result is not None else []
     with database(api) as cur:
         cur.execute('SELECT revision FROM conversations WHERE id = %s FOR UPDATE',
                     (str(job['conversation_id']),))
@@ -95,7 +102,7 @@ def finish(api, job, result=None, duration_ms=0, error=None):
             return
         served = result['served']
         pricing = api.MODELS.get(served, api.MODELS[job['model']])
-        cost = (result['input_tokens'] * pricing['input'] + result['output_tokens'] * pricing['output']) / 1_000_000
+        cost = result.get('cost_usd', (result['input_tokens'] * pricing['input'] + result['output_tokens'] * pricing['output']) / 1_000_000)
         cur.execute('SELECT position FROM conversation_messages WHERE id = %s', (str(job['user_message_id']),))
         message = cur.fetchone()
         if not message:
@@ -103,11 +110,11 @@ def finish(api, job, result=None, duration_ms=0, error=None):
         cur.execute(
             """INSERT INTO conversation_messages
                (id, conversation_id, position, role, content, model, input_tokens, output_tokens,
-                cost_usd, duration_ms, stop_reason, reasoning)
-               VALUES (%s, %s, %s, 'assistant', %s, %s, %s, %s, %s, %s, %s, %s)""",
+                cost_usd, duration_ms, stop_reason, reasoning, charts)
+               VALUES (%s, %s, %s, 'assistant', %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (str(uuid4()), str(job['conversation_id']), message['position'] + 1,
              result['answer'], served, result['input_tokens'], result['output_tokens'],
-             cost, duration_ms, result['stop_reason'], api.build_reasoning_label(job['model'], api.DEFAULT_DEPTH)),
+             cost, duration_ms, result['stop_reason'], api.build_reasoning_label(job['model'], api.DEFAULT_DEPTH), Json(charts)),
         )
         cur.execute("UPDATE conversation_jobs SET status = 'completed', finished_at = now() WHERE id = %s", (str(job['id']),))
         cur.execute(
