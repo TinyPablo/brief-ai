@@ -161,6 +161,13 @@ def check_actions():
             assert all(abs(after_delete[key] - before_delete[key]) < 1 for key in before_delete), (before_delete, after_delete)
             expect(page.get_by_role('dialog')).to_have_count(0)
             assert not deletions and len(original['messages']) == 4
+            expect(confirmation.locator('.delete-question')).to_have_text('?')
+            countdown = confirmation.locator('.delete-countdown circle')
+            before_offset = float(countdown.evaluate('(element) => parseFloat(getComputedStyle(element).strokeDashoffset)'))
+            page.wait_for_timeout(180)
+            after_offset = float(countdown.evaluate('(element) => parseFloat(getComputedStyle(element).strokeDashoffset)'))
+            assert after_offset > before_offset
+            page.screenshot(path='/private/tmp/brief-delete-countdown.png', full_page=False)
             draft.click()
             expect(confirmation).to_have_count(0)
             trash.click()

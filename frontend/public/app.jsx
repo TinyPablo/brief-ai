@@ -1111,7 +1111,10 @@ function InlineDeleteButton({ active, disabled, onDelete }) {
   return <button ref={button} type="button" className={'message-action' + (armed ? ' delete-confirm' : '')} aria-label={label} aria-pressed={armed}
     title={armed ? 'Confirm: delete this message and all later replies · Esc to cancel' : label}
     disabled={disabled || pending} onClick={click} onBlur={() => { if (!busy.current) { deadline.current = 0; setArmed(false); } }}>
-    <span key={pending ? 'pending' : armed ? 'confirm' : 'trash'} className="delete-action-icon">{pending ? <span className="spinner" /> : armed ? <MessageIcon name="check" /> : <TrashIcon />}</span>
+    <span key={pending ? 'pending' : armed ? 'confirm' : 'trash'} className="delete-action-icon" aria-hidden="true">{pending ? <span className="spinner" /> : armed ? <span className="delete-confirm-symbol">
+      <svg className="delete-countdown" viewBox="0 0 40 40" fill="none"><circle cx="20" cy="20" r="17" pathLength="1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
+      <TrashIcon /><span className="delete-question">?</span>
+    </span> : <TrashIcon />}</span>
     <span className="sr-only" role="status">{armed ? 'Click again to delete this message and all later replies. Confirmation expires in five seconds.' : ''}</span>
   </button>;
 }

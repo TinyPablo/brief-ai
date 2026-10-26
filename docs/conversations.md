@@ -61,8 +61,10 @@ message. Unreferenced images are cleaned up without affecting branches or other
 conversations. Image-only user messages are supported for creation, follow-ups and
 edits; a message without text or attachments is rejected.
 
-Deleting a user message is confirmed inline: the trash icon changes to a red
-checkmark in the same position. A second click deletes the message and later turns.
+Deleting a user message is confirmed inline: the trash icon turns red with a small
+question badge and a shrinking five-second ring. A single pulse draws attention;
+the icon does not rotate or indicate completed deletion. Reduced-motion preferences
+disable the pulse and ring animation without changing the confirmation timeout. A second click deletes the message and later turns.
 Clicking elsewhere, moving focus away, Escape, leaving the conversation, or five
 seconds of inactivity restores the trash icon without deleting anything. Pending
 deletions disable repeated clicks and display a spinner in the same button.

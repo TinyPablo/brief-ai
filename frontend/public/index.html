@@ -249,7 +249,14 @@
     .message-action.delete-confirm, .message-action.delete-confirm:hover:not(:disabled) { color: #dc5b45; background: #dc5b4518; box-shadow: inset 0 0 0 1px #dc5b4540; }
     .delete-action-icon { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; animation: delete-action-reveal .14s ease-out; }
     @keyframes delete-action-reveal { from { opacity: .35; transform: scale(.8); } to { opacity: 1; transform: scale(1); } }
-    @media (prefers-reduced-motion: reduce) { .delete-action-icon { animation: none; } }
+    .delete-confirm .delete-action-icon { animation: none; }
+    .delete-confirm-symbol { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; animation: delete-confirm-pulse .28s ease-out; }
+    .delete-countdown { position: absolute; inset: -5px; width: 30px; height: 30px; transform: rotate(-90deg); pointer-events: none; }
+    .delete-countdown circle { stroke-dasharray: 1; stroke-dashoffset: 0; animation: delete-confirm-countdown 5s linear forwards; }
+    .delete-question { position: absolute; top: -7px; right: -7px; width: 11px; height: 11px; display: flex; align-items: center; justify-content: center; border: 1px solid #dc5b4590; border-radius: 50%; background: #221e17; font: bold 9px/1 'Space Mono', monospace; }
+    @keyframes delete-confirm-countdown { to { stroke-dashoffset: 1; } }
+    @keyframes delete-confirm-pulse { 0%, 100% { transform: scale(1); } 45% { transform: scale(1.12); } }
+    @media (prefers-reduced-motion: reduce) { .delete-action-icon, .delete-confirm-symbol, .delete-countdown circle { animation: none; } }
   </style>
 </head>
 <body class="font-sans text-[#e6e6ec] antialiased">
