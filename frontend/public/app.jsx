@@ -771,9 +771,9 @@ function ImageThumb({ image, images, index, onRemove }) {
     <div className="flex flex-col items-center gap-1">
       <div className="relative w-[52px] h-[52px] border border-edge bg-panel2">
         <button type="button" className="image-preview-trigger w-full h-full" aria-label={`Preview image ${index + 1}`} onClick={() => openPreview(images, index)}>
-          <img src={image.previewUrl} alt="" className="w-full h-full object-cover" />
+          <img src={image.previewUrl || imageUrl(image.sha, image.has_thumb)} alt="" className="w-full h-full object-cover" />
         </button>
-        <button
+        {onRemove && <button
           type="button"
           onClick={() => onRemove(image.id)}
           title="Remove"
@@ -781,7 +781,7 @@ function ImageThumb({ image, images, index, onRemove }) {
           className="absolute -top-1 -right-1 w-4 h-4 bg-ink border border-edge flex items-center justify-center text-muted hover:text-white"
         >
           <svg width="8" height="8" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.6"><path d="M6 6l12 12M18 6L6 18" /></svg>
-        </button>
+        </button>}
       </div>
       <span className="font-mono text-[9px] text-muted/70">{(image.sizeBytes / 1e6).toFixed(1)}mb</span>
     </div>
@@ -1043,9 +1043,230 @@ function ConversationWorkspace({ models, defaultModel, rate, imageLimits, settin
   </div>;
 }
 
+function MessageIcon({ name }) {
+  const paths = {
+    edit: <path d="m15 4 5 5M4 20l4-1L20 7a2.1 2.1 0 0 0-3-3L5 16z" />,
+    copy: <><rect x="8" y="8" width="12" height="13" rx="2" /><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h3" /></>,
+    share: <path d="M12 15V3m-4 4 4-4 4 4M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7" />,
+    branch: <><path d="M5 20v-7c0-4 4-4 4-8V3m-3 3 3-3 3 3" /><path d="M5 13c0-4 13 0 13-8V3m-3 3 3-3 3 3" strokeDasharray="2.5 3" /></>,
+    regenerate: <path d="M20 10a8 8 0 1 0-1 7M20 4v6h-6" />,
+    close: <path d="m6 6 12 12M6 18 18 6" />,
+    check: <path d="m5 12 4 4L19 6" />,
+    attach: <path d="m8 12 6-6a3 3 0 0 1 4 4l-8 8a5 5 0 0 1-7-7l9-9m-7 13 8-8" />,
+  };
+  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
+}
+
+function AttachmentPicker({ images, limits, onClick, disabled, label = 'Attach images' }) {
+  const bytes = images.reduce((sum, im) => sum + (im.sizeBytes || 0), 0);
+  const [details, setDetails] = useState(false);
+  useEffect(() => { setDetails(false); }, [images]);
+  return <button type="button" className={'attachment-picker' + (details ? ' show-details' : '')} aria-label={label} disabled={disabled}
+    onMouseEnter={() => setDetails(true)} onMouseLeave={() => setDetails(false)} onBlur={() => setDetails(false)}
+    onFocus={(e) => { if (e.currentTarget.matches(':focus-visible')) setDetails(true); }}
+    onPointerDown={() => setDetails(false)} onClick={(e) => { setDetails(false); onClick(e); }}>
+    <MessageIcon name="attach" />{images.length > 0 && <span>{images.length}</span>}
+    <span className="attachment-details">{images.length} of {limits.max_images} images<br />{(bytes / 1e6).toFixed(1)} of {limits.max_total_mb} MB<br />PNG, JPEG, WebP, GIF</span>
+  </button>;
+}
+
+function InlineDeleteButton({ active, disabled, onDelete }) {
+  const [armed, setArmed] = useState(false);
+  const [pending, setPending] = useState(false);
+  const button = useRef(null);
+  const deadline = useRef(0);
+  const busy = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
+  useEffect(() => {
+    const cancel = () => { deadline.current = 0; setArmed(false); };
+    if (!active || disabled) { cancel(); return; }
+    if (!armed) return;
+    const outside = (event) => { if (!busy.current && !button.current?.contains(event.target)) cancel(); };
+    const escape = (event) => { if (event.key === 'Escape' && !busy.current) cancel(); };
+    const leave = () => { if (!busy.current) cancel(); };
+    const timer = setTimeout(cancel, Math.max(0, deadline.current - performance.now()));
+    document.addEventListener('pointerdown', outside, true);
+    document.addEventListener('keydown', escape);
+    window.addEventListener('blur', leave);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('pointerdown', outside, true);
+      document.removeEventListener('keydown', escape);
+      window.removeEventListener('blur', leave);
+    };
+  }, [armed, active, disabled]);
+  const click = async () => {
+    if (disabled || busy.current) return;
+    if (!armed || performance.now() >= deadline.current) {
+      deadline.current = performance.now() + 5000;
+      setArmed(true);
+      return;
+    }
+    busy.current = true; setPending(true); setArmed(false); deadline.current = 0;
+    try { await onDelete(); }
+    finally { busy.current = false; if (mounted.current) setPending(false); }
+  };
+  const label = pending ? 'Deleting message and later replies' : armed ? 'Confirm deletion of message and later replies' : 'Delete message and later replies';
+  return <button ref={button} type="button" className={'message-action' + (armed ? ' delete-confirm' : '')} aria-label={label} aria-pressed={armed}
+    title={armed ? 'Confirm: delete this message and all later replies · Esc to cancel' : label}
+    disabled={disabled || pending} onClick={click} onBlur={() => { if (!busy.current) { deadline.current = 0; setArmed(false); } }}>
+    <span key={pending ? 'pending' : armed ? 'confirm' : 'trash'} className="delete-action-icon" aria-hidden="true">{pending ? <span className="spinner" /> : armed ? <span className="delete-confirm-symbol">
+      <svg className="delete-countdown" viewBox="0 0 40 40" fill="none"><circle cx="20" cy="20" r="17" pathLength="1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
+      <TrashIcon /><span className="delete-question">?</span>
+    </span> : <TrashIcon />}</span>
+    <span className="sr-only" role="status">{armed ? 'Click again to delete this message and all later replies. Confirmation expires in five seconds.' : ''}</span>
+  </button>;
+}
+
+function ModelSelect({ models, value, onChange, disabled = false, label = 'Model' }) {
+  return <select aria-label={label} className="model-select" value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
+    {!models.some((m) => m.id === value) && <option value={value}>{value} · unavailable</option>}
+    {groupByProvider(models).map((group) => <optgroup key={group.label} label={group.label}>{group.items.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}</optgroup>)}
+  </select>;
+}
+
+function MessageEditor({ edit, models, limits, onSave, onCancel }) {
+  const [content, setContent] = useState(edit.content);
+  const [images, setImages] = useState(edit.images);
+  const [model, setModel] = useState(edit.model);
+  const [saving, setSaving] = useState(false);
+  const [reading, setReading] = useState(false);
+  const [uncertain, setUncertain] = useState(false);
+  const [error, setError] = useState('');
+  const fileInput = useRef(null);
+  const textarea = useRef(null);
+  const pending = useRef(null);
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
+  React.useLayoutEffect(() => {
+    const input = textarea.current;
+    input.focus({ preventScroll: true });
+    input.setSelectionRange(input.value.length, input.value.length);
+    input.scrollTop = input.scrollHeight;
+  }, []);
+  const user = edit.role === 'user';
+  const locked = saving || uncertain;
+  const selected = models.find((m) => m.id === model);
+  const addFiles = async (files) => {
+    if (!user || locked || reading) return;
+    const allowed = Array.from(files || []).filter((f) => limits.allowed_types.includes(f.type));
+    if (!allowed.length) return;
+    setReading(true);
+    try {
+      const added = await Promise.all(allowed.map(readImageFile));
+      if (!mounted.current) return;
+      const next = [...images, ...added];
+      if (added.some((im) => im.sizeBytes > limits.max_image_mb * 1e6) || next.length > limits.max_images || next.reduce((sum, im) => sum + im.sizeBytes, 0) > limits.max_total_mb * 1e6) {
+        setError('The selected images exceed the attachment limits.'); return;
+      }
+      setImages(next); setError('');
+    } catch { if (mounted.current) setError('Could not read one of the images.'); }
+    finally { if (mounted.current) setReading(false); }
+  };
+  const save = async () => {
+    if (saving || reading || (!content.trim() && (!user || !images.length))) return;
+    if (!pending.current) pending.current = {
+      content, revision: edit.revision, request_id: crypto.randomUUID(),
+      ...(user ? { model, images: images.map((im) => im.sha ? { sha: im.sha } : {
+        data: im.base64, media_type: im.mediaType, width: im.width, height: im.height,
+        ...(im.thumb ? { thumb: im.thumb.base64, thumb_media_type: im.thumb.mediaType } : {}),
+      }) } : {}),
+    };
+    setSaving(true); setError('');
+    try { await onSave(pending.current); }
+    catch (e) {
+      if (!mounted.current) return;
+      if (e.definitive) { pending.current = null; setUncertain(false); }
+      else setUncertain(true);
+      setError(e.message);
+    } finally { if (mounted.current) setSaving(false); }
+  };
+  return <div className="message-editor" onDrop={(e) => { e.preventDefault(); addFiles(e.dataTransfer.files); }} onDragOver={(e) => e.preventDefault()}>
+    <textarea ref={textarea} aria-label="Edit message" value={content} disabled={locked} maxLength={100000} rows={4}
+      className="w-full bg-transparent resize-y outline-none px-5 pt-5 pb-2 text-[0.95rem]"
+      onChange={(e) => setContent(e.target.value)}
+      onPaste={(e) => { const files = Array.from(e.clipboardData?.items || []).filter((item) => item.type.startsWith('image/')).map((item) => item.getAsFile()).filter(Boolean); if (files.length) addFiles(files); }}
+      onKeyDown={(e) => { if (e.key === 'Escape' && !saving) { e.preventDefault(); onCancel(); } else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); save(); } }} />
+    {images.length > 0 && <div className="flex flex-wrap gap-3 px-5 pb-4">{images.map((im, index) => <ImageThumb key={im.id} image={im} images={images} index={index} onRemove={locked || !user ? null : (id) => setImages((previous) => previous.filter((item) => item.id !== id))} />)}</div>}
+    <div className="flex flex-wrap gap-3 items-center px-5 pb-4">
+      {user && <><ModelSelect models={models} value={model} disabled={locked} onChange={setModel} label="Edit model" /><AttachmentPicker images={images} limits={limits} label="Attach images to message" disabled={locked || reading || selected?.supports_images === false} onClick={() => fileInput.current.click()} />
+      <input ref={fileInput} type="file" multiple accept={limits.allowed_types.join(',')} className="hidden" onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }} /></>}
+      <div className="ml-auto flex gap-2 items-center"><button type="button" className="message-action" aria-label="Cancel editing" title="Cancel · Esc" disabled={saving} onClick={onCancel}><MessageIcon name="close" /></button>
+      <button type="button" className="flex items-center gap-2 bg-accent hover:bg-accent2 disabled:opacity-40 disabled:hover:bg-accent text-accentInk font-mono text-[11px] font-bold px-4 py-1.5 transition-colors" disabled={saving || reading || (!content.trim() && (!user || !images.length))} onClick={save}>{saving ? 'Saving…' : uncertain ? 'Try again' : 'Save'}</button></div>
+      <p className="w-full text-[11px] font-mono text-muted">Saving changes removes later messages{user ? ' and generates a new answer.' : '.'}</p>
+      {error && <p role="alert" className="w-full text-sm text-bad">{error}</p>}
+    </div>
+  </div>;
+}
+
+function RegeneratePopover({ selection, models, onConfirm, onClose }) {
+  const [model, setModel] = useState(selection.model);
+  const [saving, setSaving] = useState(false);
+  const [uncertain, setUncertain] = useState(false);
+  const [error, setError] = useState('');
+  const [position, setPosition] = useState(null);
+  const element = useRef(null);
+  const pending = useRef(null);
+  const savingRef = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    const place = () => {
+      if (!element.current) return;
+      const box = element.current.getBoundingClientRect();
+      const scale = box.width / element.current.offsetWidth;
+      const anchor = selection.anchor.isConnected ? selection.anchor.getBoundingClientRect() : selection.rect;
+      const left = Math.max(12, Math.min(innerWidth - box.width - 12, anchor.right - box.width));
+      const proposed = anchor.bottom + 8 + box.height <= innerHeight - 12 ? anchor.bottom + 8 : anchor.top - box.height - 8;
+      const top = Math.max(12, Math.min(innerHeight - box.height - 12, proposed));
+      setPosition({ left: left / scale, top: top / scale, maxHeight: (innerHeight - top - 12) / scale });
+    };
+    const outside = (event) => { if (!savingRef.current && !element.current?.contains(event.target) && !selection.anchor.contains(event.target)) onClose(); };
+    const escape = (event) => { if (event.key === 'Escape' && !savingRef.current) { event.preventDefault(); onClose(); } };
+    const dismiss = (event) => {
+      if (savingRef.current) return;
+      if (event.type === 'resize') { onClose(); return; }
+      if (element.current?.contains(event.target)) return;
+      const anchor = selection.anchor.getBoundingClientRect();
+      if (Math.abs(anchor.top - selection.rect.top) > 1 || Math.abs(anchor.left - selection.rect.left) > 1) onClose();
+    };
+    place();
+    element.current?.querySelector('select')?.focus({ preventScroll: true });
+    document.addEventListener('pointerdown', outside);
+    document.addEventListener('keydown', escape);
+    window.addEventListener('resize', dismiss);
+    document.addEventListener('scroll', dismiss, true);
+    return () => {
+      mounted.current = false;
+      document.removeEventListener('pointerdown', outside);
+      document.removeEventListener('keydown', escape);
+      window.removeEventListener('resize', dismiss);
+      document.removeEventListener('scroll', dismiss, true);
+      if (selection.anchor.isConnected) selection.anchor.focus({ preventScroll: true });
+    };
+  }, []);
+  const confirm = async () => {
+    if (savingRef.current) return;
+    if (!pending.current) pending.current = { model, revision: selection.revision, request_id: crypto.randomUUID() };
+    savingRef.current = true; setSaving(true); setError('');
+    try { await onConfirm(pending.current); }
+    catch (e) {
+      if (!mounted.current) return;
+      if (e.definitive) { pending.current = null; setUncertain(false); } else setUncertain(true);
+      setError(e.message);
+    } finally { savingRef.current = false; if (mounted.current) setSaving(false); }
+  };
+  return ReactDOM.createPortal(<section ref={element} className="regenerate-popover" role="dialog" aria-label="Regenerate answer" style={{ ...position, visibility: position ? 'visible' : 'hidden' }}>
+    <h3 className="font-mono text-[12px] mb-3">Regenerate answer</h3>
+    <ModelSelect models={models} value={model} onChange={setModel} disabled={saving || uncertain} label="Reply model" />
+    <p className="font-mono text-[10px] text-muted mt-3">This answer and all later messages will be removed.</p>
+    {error && <p role="alert" className="text-xs text-bad mt-3">{error}</p>}
+    <div className="flex items-center justify-between gap-3 mt-4"><button type="button" className="message-action" aria-label="Cancel regeneration" title="Cancel" disabled={saving} onClick={onClose}><MessageIcon name="close" /></button><button type="button" className="deck-button primary gap-2" disabled={saving || !models.some((m) => m.id === model)} onClick={confirm}><MessageIcon name="regenerate" />{saving ? 'Regenerating…' : uncertain ? 'Try again' : 'Regenerate'}</button></div>
+  </section>, document.body);
+}
+
 function AskView({ models, model, setModel, rate, imageLimits, settings, onUnauth, conversationId, onConversationChange, viewKey, viewState, onViewState, active, onDeleted, onBranch, onClose }) {
   const limits = imageLimits || DEFAULT_IMAGE_LIMITS;
-  const groups = useMemo(() => groupByProvider(models), [models]);
   const currentModel = models.find((m) => m.id === model) || null;
   const [prompt, setPrompt] = useState(viewState.prompt);
   const [images, setImages] = useState(viewState.images);
@@ -1059,7 +1280,10 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
   const [error, setError] = useState('');
   const [refresh, setRefresh] = useState(0);
   const [deleting, setDeleting] = useState(false);
-  const [deleteMessage, setDeleteMessage] = useState(null);
+  const [editing, setEditing] = useState(null);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [regenerate, setRegenerate] = useState(null);
+  const [regenerating, setRegenerating] = useState(false);
   const [copied, setCopied] = useState(null);
   const fileInputRef = useRef(null);
   const requestRef = useRef(viewState.pendingRequest ? { id: viewState.pendingRequest.id, body: null } : null);
@@ -1072,7 +1296,7 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
   const unauthRef = useRef(onUnauth);
   unauthRef.current = onUnauth;
   const busy = ['queued', 'running'].includes(conversation?.job?.status);
-  const loading = submitting || busy;
+  const loading = submitting || busy || savingEdit || !!editing || regenerating || !!regenerate;
   const unanswered = conversation?.messages?.at(-1)?.role === 'user';
 
   useEffect(() => {
@@ -1173,20 +1397,56 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
       const res = await api('/conversations/' + conversationId + '/retry', { method: 'POST' });
       if (res.status === 401) { unauthRef.current(); return; }
       const data = await res.json();
+      if (res.status === 409) { setRefresh((x) => x + 1); return; }
       if (!res.ok) throw new Error(data.detail || data.error || 'Could not retry.');
       setRefresh((x) => x + 1);
-    } catch (e) { setError(e.message); }
+    } catch (e) { setError(e.message); setRefresh((x) => x + 1); }
     finally { setSubmitting(false); }
   };
 
-  const truncate = async () => {
+  useEffect(() => { if (!active) { setEditing(null); setRegenerate(null); } }, [active]);
+
+  const startEditing = (message) => {
+    const index = conversation.messages.findIndex((m) => m.id === message.id);
+    const answer = conversation.messages[index + 1];
+    setEditing({ id: message.id, role: message.role, content: message.content,
+      images: (message.images || []).map((im, index) => ({ ...im, id: im.sha + '-' + index, sizeBytes: im.byte_size, mediaType: im.media_type })),
+      revision: conversation.revision, model: answer?.role === 'assistant' ? answer.model : message.model });
+  };
+
+  const saveEdit = async (body) => {
+    setSavingEdit(true); setError('');
+    try {
+      const res = await api('/conversations/' + conversationId + '/messages/' + editing.id, { method: 'PATCH', body: JSON.stringify(body) });
+      if (res.status === 401) { onUnauth(); return; }
+      const data = await res.json();
+      if (!res.ok) { const error = new Error(data.detail || data.error || 'Could not save the message.'); error.definitive = res.status < 500; throw error; }
+      if (data.changed && body.model) setModel(body.model);
+      branchRequests.current.clear();
+      setEditing(null); setRefresh((x) => x + 1);
+    } catch (e) { setRefresh((x) => x + 1); throw e; }
+    finally { setSavingEdit(false); }
+  };
+
+  const confirmRegenerate = async (body) => {
+    setRegenerating(true); setError('');
+    try {
+      const res = await api('/conversations/' + conversationId + '/messages/' + regenerate.id + '/regenerate', { method: 'POST', body: JSON.stringify(body) });
+      if (res.status === 401) { onUnauth(); return; }
+      const data = await res.json();
+      if (!res.ok) { const error = new Error(data.detail || data.error || 'Could not regenerate the answer.'); error.definitive = res.status < 500; throw error; }
+      setModel(body.model); setRegenerate(null); branchRequests.current.clear(); setRefresh((x) => x + 1);
+    } catch (e) { setRefresh((x) => x + 1); throw e; }
+    finally { setRegenerating(false); }
+  };
+
+  const truncate = async (messageId) => {
     setDeleting(true); setError('');
     try {
-      const res = await api('/conversations/' + conversationId + '/messages/' + deleteMessage, { method: 'DELETE' });
+      const res = await api('/conversations/' + conversationId + '/messages/' + messageId, { method: 'DELETE' });
       if (res.status === 401) { unauthRef.current(); return; }
       const data = await res.json();
       if (!res.ok) throw new Error('Could not delete the message.');
-      setDeleteMessage(null);
       if (data.deleted_conversation) onDeleted(viewKey);
       else setRefresh((x) => x + 1);
     } catch (e) { setError(e.message); }
@@ -1263,7 +1523,7 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
   }, [prompt, currentModel, settings, imagesTokenTotal, rate, images.length, conversation]);
 
   const send = async () => {
-    if (!prompt.trim() || loading || restoring || unanswered || overLimit || unsupportedImages) return;
+    if (loading || restoring || (unanswered && !requestRef.current) || (!requestRef.current?.body && ((!prompt.trim() && !images.length) || overLimit || unsupportedImages))) return;
     setSubmitting(true); setError('');
     const body = {
       model, prompt: prompt.trim(), brief: true,
@@ -1285,8 +1545,10 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
       if (res.status === 401) { onUnauth(); return; }
       const data = await res.json();
       if (!res.ok) {
-        requestRef.current = null;
-        onViewState(viewKey, { pendingRequest: null });
+        if (res.status < 500) {
+          requestRef.current = null;
+          onViewState(viewKey, { pendingRequest: null });
+        }
         throw new Error(data.detail || data.error || 'Request failed.');
       }
       changeConversation(data.id);
@@ -1312,7 +1574,7 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
     }
   };
 
-  const sendDisabled = loading || restoring || unanswered || !prompt.trim() || overLimit || unsupportedImages;
+  const sendDisabled = loading || restoring || unanswered || (!prompt.trim() && !images.length) || overLimit || unsupportedImages;
 
   return (
     <div className="space-y-4">
@@ -1323,20 +1585,25 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
           <div className="message-toolbar flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2 border-b border-edge font-mono text-[11px] text-muted">
             <span>{message.role === 'user' ? 'You' : models.find((m) => m.id === message.model)?.label || message.model}</span>
             <time dateTime={message.created_at}>{fmtTime(message.created_at)}</time>
-            {message.role === 'user'
-              ? <button type="button" className="ml-auto hover:text-bad p-1" aria-label="Delete message and later replies" title="Delete message and later replies" disabled={deleting} onClick={() => setDeleteMessage(message.id)}><TrashIcon /></button>
-              : <button type="button" className="ml-auto hover:text-white" onClick={async () => { try { await navigator.clipboard.writeText(message.content); setCopied(message.id); setTimeout(() => setCopied(null), 1500); } catch { setError('Clipboard is unavailable. Select the answer to copy it.'); } }}>{copied === message.id ? 'copied' : 'copy'}</button>}
-            {message.role === 'assistant' && <button type="button" onClick={() => branch(message.id)} disabled={!!branching} className="hover:text-accent2 disabled:opacity-40" title="Continue in a separate conversation">{branching === message.id ? 'Creating…' : 'Branch'}</button>}
-            {message.role === 'assistant' && <button type="button" onClick={() => setShareMessage(message.id)} className="hover:text-accent2">Share</button>}
+            {message.edited_at && <span title={message.edited_at}>edited</span>}
+            <div className="message-actions ml-auto flex items-center gap-1">
+              <button type="button" className="message-action" aria-label="Copy" title={copied === message.id ? 'Copied' : 'Copy'} onClick={async () => { try { await navigator.clipboard.writeText(message.content); setCopied(message.id); setTimeout(() => setCopied(null), 1500); } catch { setError('Clipboard is unavailable. Select the message to copy it.'); } }}><MessageIcon name={copied === message.id ? 'check' : 'copy'} /></button>
+              <button type="button" className="message-action" aria-label="Edit" title="Edit" disabled={submitting || deleting || !!editing || !!regenerate || regenerating} onClick={() => startEditing(message)}><MessageIcon name="edit" /></button>
+              {message.role === 'user' ? <InlineDeleteButton active={active} disabled={deleting || !!editing || !!regenerate} onDelete={() => truncate(message.id)} /> : <>
+                <button type="button" className="message-action" aria-label="Regenerate" title="Regenerate" disabled={!!editing || !!regenerate || submitting || regenerating} onClick={(e) => setRegenerate({ id: message.id, model: message.model, revision: conversation.revision, anchor: e.currentTarget, rect: e.currentTarget.getBoundingClientRect() })}><MessageIcon name="regenerate" /></button>
+                <button type="button" className="message-action" aria-label="Branch" title={branching === message.id ? 'Creating branch…' : 'Branch'} disabled={!!branching || !!editing || !!regenerate} onClick={() => branch(message.id)}><MessageIcon name="branch" /></button>
+                <button type="button" className="message-action" aria-label="Share" title="Share" disabled={!!editing || !!regenerate} onClick={() => setShareMessage(message.id)}><MessageIcon name="share" /></button>
+              </>}
+            </div>
           </div>
-          <div className="p-5">
+          {editing?.id === message.id ? <MessageEditor key={editing.id} edit={editing} models={models} limits={limits} onSave={saveEdit} onCancel={() => setEditing(null)} /> : <div className="p-5">
             {message.role === 'user' ? <div className="whitespace-pre-wrap break-words">{message.content}</div> : <><Meta result={{ ...message, model_label: models.find((m) => m.id === message.model)?.label || message.model }} rate={rate} /><Markdown text={message.content} /></>}
             {!!message.images?.length && <div className="mt-3"><AttachmentStrip images={message.images} size={64} /></div>}
-          </div>
+          </div>}
         </div>
       ))}
-      {conversation?.job?.status === 'failed' && <div role="alert" className="border border-bad/40 p-4 text-sm"><p>{conversation.job.error_detail}</p><button type="button" className="deck-button mt-3" onClick={retry} disabled={submitting}>Retry answer</button></div>}
-      {deleteMessage && <Modal title="Delete from this message?" onClose={() => { if (!deleting) setDeleteMessage(null); }}><p className="text-sm text-muted">This message and all later replies will be deleted.</p><div className="flex gap-3 mt-6"><button type="button" className="deck-button" disabled={deleting} onClick={() => setDeleteMessage(null)}>Keep messages</button><button type="button" className="deck-button danger" disabled={deleting} onClick={truncate}>{deleting ? 'Deleting…' : 'Delete'}</button></div></Modal>}
+      {regenerate && <RegeneratePopover key={regenerate.id} selection={regenerate} models={models} onConfirm={confirmRegenerate} onClose={() => setRegenerate(null)} />}
+      {conversation?.job?.status === 'failed' && unanswered && <div role="alert" className="border border-bad/40 p-4 text-sm flex flex-wrap items-center justify-between gap-3"><p>{conversation.job.error_detail}</p><button type="button" className="deck-button gap-2" onClick={retry} disabled={loading}><MessageIcon name="regenerate" />Try again</button></div>}
       <div
         className="corner-panel border border-edge bg-panel focus-within:border-accent/60 transition-colors"
         onDrop={onDrop}
@@ -1345,56 +1612,16 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
         <div className="flex items-center justify-between px-4 py-2 border-b border-edge">
           <span className="font-mono text-[10px] tracking-widest text-muted/80 uppercase">prompt</span>
         </div>
-
-        <textarea
-          value={prompt}
-          disabled={submitting}
-          onChange={(e) => setPrompt(e.target.value)}
-          onKeyDown={onKeyDown}
-          onPaste={onTextareaPaste}
-          placeholder={conversationId ? "Follow up…" : "Ask anything…"}
-          rows={3}
-          className="w-full bg-transparent resize-y outline-none px-4 pt-3 pb-1 text-[0.95rem] placeholder:text-muted/70 min-h-[4.5rem]"
-        />
-
-        {images.length > 0 && (
-          <div className="flex flex-wrap gap-2.5 px-4 pt-3 pb-1">
-            {images.map((im, index) => (
-              <ImageThumb key={im.id} image={im} images={images} index={index} onRemove={removeImage} />
-            ))}
-          </div>
-        )}
+        <textarea value={prompt} disabled={submitting} onChange={(e) => setPrompt(e.target.value)} onKeyDown={onKeyDown} onPaste={onTextareaPaste}
+          placeholder={conversationId ? 'Follow up…' : 'Ask anything…'} rows={3}
+          className="w-full bg-transparent resize-y outline-none px-4 pt-3 pb-1 text-[0.95rem] placeholder:text-muted/70 min-h-[4.5rem]" />
+        {images.length > 0 && <div className="flex flex-wrap gap-2.5 px-4 pt-3 pb-1">{images.map((im, index) => <ImageThumb key={im.id} image={im} images={images} index={index} onRemove={removeImage} />)}</div>}
 
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 border-t border-edge font-mono text-[11px] text-muted">
-          <select
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            className="bg-panel2 border border-edge rounded text-[11px] font-mono px-2 py-1.5 outline-none hover:border-accent/50 transition cursor-pointer text-[#e8e2d6]"
-          >
-            {groups.map((g) => (
-              <optgroup key={g.label} label={g.label}>
-                {g.items.map((m) => (
-                  <option key={m.id} value={m.id}>{m.label}</option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
+          <ModelSelect models={models} value={model} onChange={setModel} />
 
 
-          <button
-            type="button"
-            onClick={() => fileInputRef.current && fileInputRef.current.click()}
-            disabled={currentModel?.supports_images === false}
-            title={currentModel?.supports_images === false ? "This model supports text only" : "Attach images"}
-            className="flex items-center gap-1.5 text-muted hover:text-white transition-colors"
-          >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-              <path d="M21.44 11.05l-9.19 9.19a5 5 0 01-7.07-7.07l8.49-8.49a3.5 3.5 0 014.95 4.95l-8.49 8.49a2 2 0 01-2.83-2.83l7.78-7.78" />
-            </svg>
-            <span className={overLimit ? 'text-bad' : images.length ? 'text-good' : ''}>
-              {images.length}/{limits.max_images} · {(totalImageBytes / 1e6).toFixed(1)}/{limits.max_total_mb}mb
-            </span>
-          </button>
+          <AttachmentPicker images={images} limits={limits} disabled={currentModel?.supports_images === false} onClick={() => fileInputRef.current?.click()} />
           <input
             ref={fileInputRef}
             type="file"
@@ -1423,14 +1650,14 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
               disabled={sendDisabled}
               className="flex items-center gap-2 bg-accent hover:bg-accent2 disabled:opacity-40 disabled:hover:bg-accent text-accentInk text-[11px] font-bold px-4 py-1.5 transition-colors"
             >
-              {loading ? <span className="spinner" /> : null}
-              {loading ? 'thinking…' : conversationId ? 'send' : 'brief'}
+              {(submitting || busy) ? <span className="spinner" /> : null}
+              {(submitting || busy) ? 'thinking…' : conversationId ? 'send' : 'brief'}
             </button>
           </div>
         </div>
       </div>
 
-      {conversationId && <p className="font-mono text-[10px] text-muted">Saved automatically</p>}
+      {conversationId && <p className="font-mono text-[10px] text-muted flex items-center gap-2"><span className="text-good"><MessageIcon name="check" /></span>Saved automatically</p>}
       {unsupportedImages && <p role="alert" className="text-sm text-bad">This conversation contains images. Select a model that supports images.</p>}
       {currentModel?.provider === "local" && (
         <p className="font-mono text-xs text-muted" role="status">
@@ -1445,7 +1672,7 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
         </div>
       )}
 
-      {loading && (
+      {(submitting || busy) && (
         <div className="text-sm text-muted flex items-center gap-2 px-1">
           <span className="spinner" />
           <span>{conversation?.job?.status === 'queued' ? 'Queued…' : 'Generating…'}</span>
@@ -1455,6 +1682,7 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
       {error && (
         <div className="bg-red-950/40 border border-bad/40 text-red-300 text-sm rounded-xl px-4 py-3">
           {error}
+          {requestRef.current && !submitting && !busy && <button type="button" className="deck-button gap-2 mt-3" disabled={!!editing || !!regenerate} onClick={send}><MessageIcon name="regenerate" />Try again</button>}
         </div>
       )}
 

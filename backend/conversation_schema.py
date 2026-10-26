@@ -122,3 +122,19 @@ CONVERSATION_MIGRATIONS += (
     '''CREATE TRIGGER revoke_conversation_snapshots BEFORE DELETE ON conversation_messages
        FOR EACH ROW EXECUTE FUNCTION revoke_conversation_snapshots()''',
 )
+
+CONVERSATION_MIGRATIONS += (
+    'ALTER TABLE conversation_messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ',
+)
+
+CONVERSATION_MIGRATIONS += (
+    """CREATE TABLE IF NOT EXISTS conversation_mutations (
+        request_id UUID PRIMARY KEY,
+        conversation_id UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        message_id UUID NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('edit', 'regenerate')),
+        response JSONB NOT NULL,
+        status INTEGER NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )""",
+)
