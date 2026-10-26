@@ -1,0 +1,27 @@
+.answer-chart { margin: 20px 0 4px; border: 1px solid #3a3226; border-radius: 5px; background: #1a1712; min-width: 0; overflow: hidden; }
+.answer-chart-header { padding: 12px 16px; border-bottom: 1px solid #3a3226; display: flex; flex-wrap: wrap; gap: 8px 12px; justify-content: space-between; align-items: center; }
+.answer-chart-header h3 { flex: 1 1 120px; margin: 0; font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
+.chart-data-toggle { flex-shrink: 0; padding: 6px 9px; border: 1px solid #3a3226; border-radius: 4px; font-size: 12px; color: #e6a84a; }
+.chart-data-toggle:hover { background: #221e17; }
+.chart-provenance { padding: 12px 16px 0; color: #b0a393; font-size: 12px; overflow-wrap: anywhere; }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 8px 16px; }
+.chart-legend button { display: inline-flex; align-items: center; gap: 7px; min-height: 32px; font-size: 12px; overflow-wrap: anywhere; text-align: left; }
+.chart-legend button span { width: 9px; height: 9px; flex-shrink: 0; }
+.chart-legend button[aria-pressed="false"] { opacity: .45; text-decoration: line-through; }
+.chart-plot { margin: 0 8px; min-width: 0; }
+.chart-plot svg { display: block; overflow: visible; touch-action: pan-y; }
+.chart-grid { stroke: #3a3226; stroke-width: 1; }
+.chart-axis { stroke: #9c9286; stroke-width: 1; }
+.chart-tick, .chart-unit { fill: #b0a393; font: 11px 'Space Mono', monospace; }
+.chart-hover-guide { stroke: #9c9286; stroke-width: 1; stroke-dasharray: 3 4; pointer-events: none; }
+.chart-detail { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; min-height: 44px; padding: 4px 12px 12px; color: #b0a393; font-size: 12px; overflow-wrap: anywhere; }
+.chart-detail strong { font-weight: 500; color: #eee8dd; font-variant-numeric: tabular-nums; }
+.chart-data { overflow-x: auto; padding: 0 16px 12px; }
+.chart-data table { width: 100%; font-size: 12px; border-collapse: collapse; }
+.chart-data caption { text-align: left; color: #b0a393; padding-bottom: 8px; }
+.chart-data th, .chart-data td { padding: 8px; text-align: left; border-bottom: 1px solid #3a3226; overflow-wrap: anywhere; max-width: 240px; }
+.chart-data td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+.chart-data th { font-weight: 500; }
+.chart-unavailable { color: #b0a393; font-size: 13px; }
+@media (pointer: coarse) { .chart-legend button, .chart-data-toggle { min-height: 44px; } }
+@media (max-width: 480px) { .answer-chart-header { padding: 10px; } .chart-provenance, .chart-legend { padding-left: 10px; padding-right: 10px; } .chart-plot { margin: 0; } }

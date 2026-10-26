@@ -203,7 +203,7 @@ def register_routes(app, api):
             last = cur.fetchone()
             if last and last['role'] != 'assistant':
                 return jsonify(error='unanswered_message', detail='Retry or delete the unanswered message first.'), 409
-            cur.execute('SELECT count(*) AS count, COALESCE(sum(length(content)), 0) AS chars FROM conversation_messages WHERE conversation_id = %s', (str(cid),))
+            cur.execute('SELECT count(*) AS count, COALESCE(sum(length(content) + length(charts::text)), 0) AS chars FROM conversation_messages WHERE conversation_id = %s', (str(cid),))
             size = cur.fetchone()
             if size['count'] >= MAX_CONVERSATION_MESSAGES - 1 or size['chars'] + len(body['prompt']) > MAX_CONVERSATION_CHARS:
                 return jsonify(error='conversation_too_long'), 400
@@ -341,7 +341,7 @@ def register_routes(app, api):
                 error = validate_model_images(cur, cid, model, position, shas)
                 if error:
                     return error
-            cur.execute('SELECT COALESCE(sum(length(content)), 0) AS chars FROM conversation_messages WHERE conversation_id = %s AND position < %s', (str(cid), position))
+            cur.execute('SELECT COALESCE(sum(length(content) + length(charts::text)), 0) AS chars FROM conversation_messages WHERE conversation_id = %s AND position < %s', (str(cid), position))
             if cur.fetchone()['chars'] + len(content) > MAX_CONVERSATION_CHARS:
                 return jsonify(error='conversation_too_long'), 400
             orphan_shas = invalidate_tail(cur, cid, position, mid)

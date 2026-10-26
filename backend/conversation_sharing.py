@@ -28,7 +28,7 @@ def public_answer(api, token):
         return dict(created_at=row['created_at'].isoformat(),
                     model_label=api.MODELS.get(row['model'], {}).get('label', row['model']),
                     prompt=row['prompt'] if row['share_show_prompt'] else None,
-                    answer=row['content'], images=images[0].get('images', []))
+                    answer=row['content'], charts=row.get('charts', []), images=images[0].get('images', []))
 
 
 def image_allowed(api, token, sha):
@@ -110,11 +110,12 @@ def register_sharing(app, api):
             source = [dict(row) for row in cur.fetchall()]
             image_metadata(cur, source)
             messages = [dict(role=row['role'], content=row['content'], created_at=row['created_at'].isoformat(),
+                             charts=row.get('charts', []),
                              model_label=api.MODELS.get(row['model'], {}).get('label', row['model']), images=row['images'])
                         for row in source]
             payload = dict(scope=scope, title=conversation['title'], messages=messages,
                            created_at=anchor['created_at'].isoformat(),
-                           answer=anchor['content'], model_label=api.MODELS.get(anchor['model'], {}).get('label', anchor['model']),
+                           answer=anchor['content'], charts=anchor.get('charts', []), model_label=api.MODELS.get(anchor['model'], {}).get('label', anchor['model']),
                            prompt=source[-2]['content'] if scope != 'answer' else None,
                            images=source[-2]['images'] if scope != 'answer' else [])
             cur.execute('DELETE FROM conversation_share_snapshots WHERE message_id = %s', (str(mid),))
