@@ -334,13 +334,13 @@ def register_routes(app, api):
             answer = cur.fetchone()
             original_model = answer['model'] if answer else message['model']
             model = body.get('model', original_model)
+            changed = content != message['content'] or shas != original_shas or (message['role'] == 'user' and model != original_model)
+            if not changed:
+                return remember_mutation(cur, cid, mid, request_id, 'edit', dict(ok=True, changed=False))
             if message['role'] == 'user':
                 error = validate_model_images(cur, cid, model, position, shas)
                 if error:
                     return error
-            changed = content != message['content'] or shas != original_shas or (message['role'] == 'user' and model != original_model)
-            if not changed:
-                return remember_mutation(cur, cid, mid, request_id, 'edit', dict(ok=True, changed=False))
             cur.execute('SELECT COALESCE(sum(length(content)), 0) AS chars FROM conversation_messages WHERE conversation_id = %s AND position < %s', (str(cid), position))
             if cur.fetchone()['chars'] + len(content) > MAX_CONVERSATION_CHARS:
                 return jsonify(error='conversation_too_long'), 400
@@ -360,6 +360,43 @@ def register_routes(app, api):
                 response.update(id=str(cid), job_id=request_id, message_id=str(mid), model=model)
                 status = 202
             return remember_mutation(cur, cid, mid, request_id, 'edit', response, status)
+
+    @app.post('/api/conversations/<uuid:cid>/messages/<uuid:mid>/regenerate')
+    @api.require_auth
+    def regenerate_answer(cid, mid):
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict) or type(body.get('revision')) is not int:
+            return jsonify(error='invalid_revision'), 400
+        with database(api) as cur:
+            request_id, previous = mutation_request(cur, cid, mid, body, 'regenerate')
+            if previous is not None:
+                return previous
+            cur.execute('SELECT revision FROM conversations WHERE id = %s FOR UPDATE', (str(cid),))
+            conversation = cur.fetchone()
+            if not conversation:
+                return jsonify(error='not_found'), 404
+            if conversation['revision'] != body['revision']:
+                return jsonify(error='conversation_changed', detail='The conversation changed. Reload it before regenerating.'), 409
+            cur.execute("SELECT position, model FROM conversation_messages WHERE id = %s AND conversation_id = %s AND role = 'assistant'", (str(mid), str(cid)))
+            answer = cur.fetchone()
+            if not answer:
+                return jsonify(error='not_found'), 404
+            cur.execute("SELECT id, position FROM conversation_messages WHERE conversation_id = %s AND position = %s AND role = 'user'", (str(cid), answer['position'] - 1))
+            question = cur.fetchone()
+            if not question:
+                return jsonify(error='missing_question'), 409
+            cur.execute('SELECT image_sha FROM conversation_message_images WHERE message_id = %s', (str(question['id']),))
+            images = [row['image_sha'] for row in cur.fetchall()]
+            model = body.get('model', answer['model'])
+            error = validate_model_images(cur, cid, model, question['position'], images)
+            if error:
+                return error
+            shas = invalidate_tail(cur, cid, question['position'])
+            cur.execute('UPDATE conversation_messages SET model = %s WHERE id = %s', (model, str(question['id'])))
+            cur.execute('INSERT INTO conversation_jobs (id, conversation_id, user_message_id, model, revision) VALUES (%s, %s, %s, %s, %s)', (request_id, str(cid), str(question['id']), model, conversation['revision'] + 1))
+            api.delete_orphan_images(cur, shas)
+            return remember_mutation(cur, cid, mid, request_id, 'regenerate',
+                                     dict(id=str(cid), job_id=request_id, message_id=str(question['id']), model=model), 202)
 
     @app.delete('/api/conversations/<uuid:cid>/messages/<uuid:mid>')
     @api.require_auth

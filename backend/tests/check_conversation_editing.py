@@ -135,7 +135,50 @@ def check_editing():
         assert post('/conversations/' + pcid + '/messages', prompt='', model=model, request_id=str(uuid4()), images=[upload]).status_code == 202
         assert run_one(api)
         assert post('/conversations', prompt='', model=model, request_id=str(uuid4())).status_code == 400
-        print('PASS: user/assistant edits, tail deletion, attachments, scoped share revocation, independent branches, stale edits, automatic/idempotent generation and stale worker completion')
+        # Regenerating an earlier answer preserves its question and earlier shares.
+        regen_created = post('/conversations', prompt='Regenerate A', model=model, request_id=str(uuid4()), images=[upload])
+        rcid = regen_created.json['id']
+        assert run_one(api)
+        post('/conversations/' + rcid + '/messages', prompt='Regenerate C', model=model, request_id=str(uuid4()))
+        assert run_one(api)
+        ra, rb, rc, rd = get(rcid)['messages']
+        rb_token = post('/conversation-messages/' + rb['id'] + '/share').json['token']
+        rd_token = post('/conversation-messages/' + rd['id'] + '/share').json['token']
+        rcopy = post('/conversations/' + rcid + '/branches', message_id=rd['id'], request_id=str(uuid4())).json['id']
+        later = post('/conversations/' + rcid + '/messages', prompt='Later in flight', model=model, request_id=str(uuid4()))
+        with database(api) as cur:
+            cur.execute("UPDATE conversation_jobs SET status = 'running' WHERE id = %s RETURNING *", (later.json['job_id'],))
+            old_job = dict(cur.fetchone())
+        regen_path = '/api/conversations/' + rcid + '/messages/' + rd['id'] + '/regenerate'
+        regen_body = dict(revision=get(rcid)['revision'], request_id=str(uuid4()), model='claude-haiku-4-5')
+        assert api.app.test_client().post(regen_path, json=regen_body).status_code == 401
+        assert client.post(regen_path, json={**regen_body, 'model': 'invalid-model'}).status_code == 400
+        assert len(get(rcid)['messages']) == 5
+        response = client.post(regen_path, json=regen_body)
+        assert response.status_code == 202, response.json
+        assert [m['id'] for m in get(rcid)['messages']] == [ra['id'], rb['id'], rc['id']]
+        assert client.get('/api/share/' + rb_token).status_code == 200
+        assert client.get('/api/share/' + rd_token).status_code == 404
+        assert len(get(rcopy)['messages']) == 4
+        for _ in range(2):
+            assert client.post(regen_path, json=regen_body).json == response.json
+        finish(api, old_job, fake(model, '', '', messages=[]))
+        assert len(get(rcid)['messages']) == 3
+        assert run_one(api)
+        assert get(rcid)['messages'][-1]['model'] == 'claude-haiku-4-5'
+        assert client.post(regen_path, json=regen_body).json == response.json
+        assert len(get(rcid)['messages']) == 4
+        # Earlier regeneration includes old image context and does not mutate a branch.
+        path_b = '/api/conversations/' + rcid + '/messages/' + rb['id'] + '/regenerate'
+        assert client.post(path_b, json=regen_body).status_code == 409
+        assert client.post(path_b, json={**regen_body, 'request_id': str(uuid4()), 'revision': 0}).status_code == 409
+        assert client.post(path_b, json={**regen_body, 'request_id': str(uuid4()), 'revision': get(rcid)['revision']}).status_code == 202
+        assert len(get(rcid)['messages']) == 1
+        assert get(rcid)['messages'][0]['images'] == ra['images']
+        assert client.get('/api/share/' + rb_token).status_code == 404
+        assert run_one(api)
+        assert len(get(rcopy)['messages']) == 4
+        print('PASS: user/assistant edits, tail deletion, attachments, scoped share revocation, independent branches, stale edits, unchanged saves, image-only messages, scoped/idempotent regeneration and stale worker completion')
     finally:
         if previous is None:
             os.environ.pop('PGOPTIONS', None)

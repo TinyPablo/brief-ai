@@ -61,6 +61,29 @@ message. Unreferenced images are cleaned up without affecting branches or other
 conversations. Image-only user messages are supported for creation, follow-ups and
 edits; a message without text or attachments is rejected.
 
+## Regeneration and recovery
+
+Assistant-message header actions use icons for Copy, Edit, Regenerate, Branch and
+Share. Regenerate opens one anchored panel with a model list and confirmation.
+Changing the selection does not replace the panel or change the conversation.
+Outside click, Escape and the cancel icon dismiss it without applying changes.
+Confirming removes that assistant response and all later turns, keeps its preceding
+question and images, and atomically queues a replacement using the selected model.
+The selected model also becomes the default for subsequent follow-ups. Regeneration
+uses the same revision checks, durable receipts, share revocation and branch
+independence as editing.
+
+A failed generation displays an explicit Try again action beneath the stored user
+message. It retries the existing job rather than inserting another question.
+Background polling reconnects to pending work after a lost connection. If the
+initial submission acknowledgement is lost, Try again resends the captured request
+with its original request ID so the server returns the same conversation/job.
+An uncertain edit or regeneration keeps its request locked until resolved, allowing
+Try again without silently changing the body of an already accepted request.
+
+Attachment buttons display a paperclip and optional image count. Size and limits
+appear on hover or focus. The save indicator includes a checkmark.
+
 ## API
 
 All routes require the existing authenticated session.
@@ -73,6 +96,7 @@ All routes require the existing authenticated session.
 | POST | `/api/conversations/<id>/messages` | Append a follow-up after the last assistant response |
 | POST | `/api/conversations/<id>/retry` | Explicitly retry the latest failed job |
 | PATCH | `/api/conversations/<id>/messages/<message_id>` | Edit with `content`, `revision`, `request_id` and optional `model`; truncate later messages and queue a response for user edits |
+| POST | `/api/conversations/<id>/messages/<message_id>/regenerate` | Confirm replacement of an assistant answer with `revision`, `request_id` and `model` |
 | DELETE | `/api/conversations/<id>/messages/<message_id>` | Delete a user message and the rest of the conversation |
 
 Create and append bodies contain `request_id` (a client-generated UUID),
@@ -112,11 +136,13 @@ python3 -m pytest backend/tests -q
 PYTHONPATH=backend python3 backend/tests/check_conversation_schema.py
 PYTHONPATH=backend python3 backend/tests/check_conversation_api.py
 PYTHONPATH=backend python3 backend/tests/check_conversation_editing.py
+python3 backend/tests/check_conversation_actions.py
 ```
 
-The last two commands require `DATABASE_URL`. The schema check rolls back its
-transaction. The API check uses and removes an isolated temporary schema, stubs
-providers, and does not issue real model requests. Run these checks against a
+The schema, API and editing checks require `DATABASE_URL`. The schema check rolls back its
+transaction. The API and editing checks use and remove isolated temporary schemas, stub
+providers, and do not issue real model requests. The actions check uses mocked HTTP
+responses in Chrome and verifies editing, regeneration, recovery and mobile layout. Run these checks against a
 local test database.
 
 ## Browser workspace

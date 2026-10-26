@@ -24,10 +24,12 @@ def provider_messages(turns, provider):
             else:
                 raise ValueError('This model supports text only.')
         if provider == 'google':
-            parts.append({'text': text})
+            if text or not parts:
+                parts.append({'text': text})
             messages.append({'role': 'model' if role == 'assistant' else 'user', 'parts': parts})
         elif provider in ('anthropic', 'openai'):
-            parts.append({'type': 'text', 'text': text})
+            if text or not parts:
+                parts.append({'type': 'text', 'text': text})
             messages.append({'role': role, 'content': parts})
         else:
             messages.append({'role': role, 'content': text})

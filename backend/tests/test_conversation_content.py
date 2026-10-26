@@ -35,3 +35,12 @@ def test_previous_image_stays_with_its_original_user_message(provider):
 def test_text_only_model_rejects_images_instead_of_silently_discarding_them():
     with pytest.raises(ValueError, match='text only'):
         provider_messages([{'role': 'user', 'content': 'A', 'images': [{'raw': b'x', 'media_type': 'image/png'}]}], 'local')
+
+
+@pytest.mark.parametrize('provider', ['anthropic', 'openai', 'google'])
+def test_image_only_message_has_no_empty_text_block(provider):
+    messages = provider_messages([{'role': 'user', 'content': '',
+                                  'images': [{'raw': b'image', 'media_type': 'image/png'}]}], provider)
+    parts = messages[0]['parts' if provider == 'google' else 'content']
+    assert len(parts) == 1
+    assert parts[0].get('type') != 'text' and 'text' not in parts[0]
