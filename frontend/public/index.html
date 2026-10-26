@@ -237,14 +237,12 @@
     .attachment-picker:hover:not(:disabled) { color: #e8e2d6; }
     .attachment-picker:disabled { opacity: .4; }
     .attachment-details { display: none; position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 30; background: #221e17; border: 1px solid #3a3226; padding: 10px 12px; width: 210px; text-align: left; line-height: 1.8; box-shadow: 0 10px 30px #0006; border-radius: 4px; }
-    .attachment-picker:hover .attachment-details, .attachment-picker:focus .attachment-details { display: block; }
+    .attachment-picker.show-details .attachment-details { display: block; }
+    .model-select { appearance: auto; background: #221e17; border: 1px solid #3a3226; border-radius: 4px; padding: 6px 8px; font: 11px 'Space Mono', monospace; color: #e8e2d6; max-width: 100%; min-width: 0; cursor: pointer; }
+    .model-select:hover:not(:disabled) { border-color: #e6a84a80; }
+    .model-select:disabled { opacity: .5; cursor: default; }
+    .regenerate-popover .model-select { width: 100%; }
     .regenerate-popover { position: fixed; z-index: 110; width: min(300px, calc(100vw / 1.2 - 24px)); max-height: calc(100dvh / 1.2 - 24px); overflow-y: auto; padding: 16px; border: 1px solid #645039; border-radius: 5px; background: #211c15; box-shadow: 0 20px 70px #0009; color: #e8e2d6; }
-    .regenerate-models { display: flex; flex-direction: column; gap: 4px; max-height: 230px; overflow-y: auto; }
-    .regenerate-model { display: flex; justify-content: space-between; align-items: center; gap: 12px; text-align: left; padding: 9px 10px; border: 1px solid transparent; border-radius: 3px; color: #9c9286; font-size: 13px; flex-shrink: 0; }
-    .regenerate-model:hover:not(:disabled) { background: #ffffff06; }
-    .regenerate-model.selected { color: #e8e2d6; background: #e6a84a0b; border-color: #e6a84a40; }
-    .regenerate-model svg { color: #e6a84a; }
-    .regenerate-model:disabled { opacity: .5; }
     .corner-panel:has(> .message-editor) { border-color: #e6a84a80; }
     .message-editor { border-top: 1px solid #e6a84a30; }
     @media (max-width: 640px) { .message-actions { gap: 0; } .message-action { width: 32px; } .message-toolbar > time { font-size: 10px; } }

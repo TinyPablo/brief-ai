@@ -64,7 +64,9 @@ edits; a message without text or attachments is rejected.
 ## Regeneration and recovery
 
 Assistant-message header actions use icons for Copy, Edit, Regenerate, Branch and
-Share. Regenerate opens one anchored panel with a model list and confirmation.
+Share. Regenerate opens one anchored panel with a native model select and confirmation.
+The same select style is used in the prompt composer and message editor. Scrolling
+the conversation dismisses the panel instead of repositioning it.
 Changing the selection does not replace the panel or change the conversation.
 Outside click, Escape and the cancel icon dismiss it without applying changes.
 Confirming removes that assistant response and all later turns, keeps its preceding
@@ -82,7 +84,7 @@ An uncertain edit or regeneration keeps its request locked until resolved, allow
 Try again without silently changing the body of an already accepted request.
 
 Attachment buttons display a paperclip and optional image count. Size and limits
-appear on hover or focus. The save indicator includes a checkmark.
+appear on hover or keyboard focus and close after clicking or changing attachments. The save indicator includes a checkmark.
 
 ## API
 

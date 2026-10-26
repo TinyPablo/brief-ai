@@ -1059,10 +1059,22 @@ function MessageIcon({ name }) {
 
 function AttachmentPicker({ images, limits, onClick, disabled, label = 'Attach images' }) {
   const bytes = images.reduce((sum, im) => sum + (im.sizeBytes || 0), 0);
-  return <button type="button" className="attachment-picker" aria-label={label} onClick={onClick} disabled={disabled}>
+  const [details, setDetails] = useState(false);
+  useEffect(() => { setDetails(false); }, [images]);
+  return <button type="button" className={'attachment-picker' + (details ? ' show-details' : '')} aria-label={label} disabled={disabled}
+    onMouseEnter={() => setDetails(true)} onMouseLeave={() => setDetails(false)} onBlur={() => setDetails(false)}
+    onFocus={(e) => { if (e.currentTarget.matches(':focus-visible')) setDetails(true); }}
+    onPointerDown={() => setDetails(false)} onClick={(e) => { setDetails(false); onClick(e); }}>
     <MessageIcon name="attach" />{images.length > 0 && <span>{images.length}</span>}
     <span className="attachment-details">{images.length} of {limits.max_images} images<br />{(bytes / 1e6).toFixed(1)} of {limits.max_total_mb} MB<br />PNG, JPEG, WebP, GIF</span>
   </button>;
+}
+
+function ModelSelect({ models, value, onChange, disabled = false, label = 'Model' }) {
+  return <select aria-label={label} className="model-select" value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
+    {!models.some((m) => m.id === value) && <option value={value}>{value} · unavailable</option>}
+    {groupByProvider(models).map((group) => <optgroup key={group.label} label={group.label}>{group.items.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}</optgroup>)}
+  </select>;
 }
 
 function MessageEditor({ edit, models, limits, onSave, onCancel }) {
@@ -1074,9 +1086,16 @@ function MessageEditor({ edit, models, limits, onSave, onCancel }) {
   const [uncertain, setUncertain] = useState(false);
   const [error, setError] = useState('');
   const fileInput = useRef(null);
+  const textarea = useRef(null);
   const pending = useRef(null);
   const mounted = useRef(true);
   useEffect(() => () => { mounted.current = false; }, []);
+  React.useLayoutEffect(() => {
+    const input = textarea.current;
+    input.focus({ preventScroll: true });
+    input.setSelectionRange(input.value.length, input.value.length);
+    input.scrollTop = input.scrollHeight;
+  }, []);
   const user = edit.role === 'user';
   const locked = saving || uncertain;
   const selected = models.find((m) => m.id === model);
@@ -1115,17 +1134,14 @@ function MessageEditor({ edit, models, limits, onSave, onCancel }) {
     } finally { if (mounted.current) setSaving(false); }
   };
   return <div className="message-editor" onDrop={(e) => { e.preventDefault(); addFiles(e.dataTransfer.files); }} onDragOver={(e) => e.preventDefault()}>
-    <textarea aria-label="Edit message" autoFocus value={content} disabled={locked} maxLength={100000} rows={4}
+    <textarea ref={textarea} aria-label="Edit message" value={content} disabled={locked} maxLength={100000} rows={4}
       className="w-full bg-transparent resize-y outline-none px-5 pt-5 pb-2 text-[0.95rem]"
       onChange={(e) => setContent(e.target.value)}
       onPaste={(e) => { const files = Array.from(e.clipboardData?.items || []).filter((item) => item.type.startsWith('image/')).map((item) => item.getAsFile()).filter(Boolean); if (files.length) addFiles(files); }}
       onKeyDown={(e) => { if (e.key === 'Escape' && !saving) { e.preventDefault(); onCancel(); } else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); save(); } }} />
     {images.length > 0 && <div className="flex flex-wrap gap-3 px-5 pb-4">{images.map((im, index) => <ImageThumb key={im.id} image={im} images={images} index={index} onRemove={locked || !user ? null : (id) => setImages((previous) => previous.filter((item) => item.id !== id))} />)}</div>}
     <div className="flex flex-wrap gap-3 items-center px-5 pb-4">
-      {user && <><select aria-label="Edit model" value={model} disabled={locked} onChange={(e) => setModel(e.target.value)} className="deck-input font-mono text-[11px] max-w-full">
-        {!selected && <option value={model}>{model} · unavailable</option>}
-        {groupByProvider(models).map((group) => <optgroup key={group.label} label={group.label}>{group.items.map((m) => <option value={m.id} key={m.id}>{m.label}</option>)}</optgroup>)}
-      </select><AttachmentPicker images={images} limits={limits} label="Attach images to message" disabled={locked || reading || selected?.supports_images === false} onClick={() => fileInput.current.click()} />
+      {user && <><ModelSelect models={models} value={model} disabled={locked} onChange={setModel} label="Edit model" /><AttachmentPicker images={images} limits={limits} label="Attach images to message" disabled={locked || reading || selected?.supports_images === false} onClick={() => fileInput.current.click()} />
       <input ref={fileInput} type="file" multiple accept={limits.allowed_types.join(',')} className="hidden" onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }} /></>}
       <div className="ml-auto flex gap-2 items-center"><button type="button" className="message-action" aria-label="Cancel editing" title="Cancel · Esc" disabled={saving} onClick={onCancel}><MessageIcon name="close" /></button>
       <button type="button" className="flex items-center gap-2 bg-accent hover:bg-accent2 disabled:opacity-40 disabled:hover:bg-accent text-accentInk font-mono text-[11px] font-bold px-4 py-1.5 transition-colors" disabled={saving || reading || (!content.trim() && (!user || !images.length))} onClick={save}>{saving ? 'Saving…' : uncertain ? 'Try again' : 'Save'}</button></div>
@@ -1154,22 +1170,29 @@ function RegeneratePopover({ selection, models, onConfirm, onClose }) {
       const left = Math.max(12, Math.min(innerWidth - box.width - 12, anchor.right - box.width));
       const proposed = anchor.bottom + 8 + box.height <= innerHeight - 12 ? anchor.bottom + 8 : anchor.top - box.height - 8;
       const top = Math.max(12, Math.min(innerHeight - box.height - 12, proposed));
-      setPosition({ left: left / scale, top: top / scale });
+      setPosition({ left: left / scale, top: top / scale, maxHeight: (innerHeight - top - 12) / scale });
     };
     const outside = (event) => { if (!savingRef.current && !element.current?.contains(event.target) && !selection.anchor.contains(event.target)) onClose(); };
     const escape = (event) => { if (event.key === 'Escape' && !savingRef.current) { event.preventDefault(); onClose(); } };
+    const dismiss = (event) => {
+      if (savingRef.current) return;
+      if (event.type === 'resize') { onClose(); return; }
+      if (element.current?.contains(event.target)) return;
+      const anchor = selection.anchor.getBoundingClientRect();
+      if (Math.abs(anchor.top - selection.rect.top) > 1 || Math.abs(anchor.left - selection.rect.left) > 1) onClose();
+    };
     place();
-    element.current?.querySelector('[aria-checked="true"]')?.focus({ preventScroll: true });
+    element.current?.querySelector('select')?.focus({ preventScroll: true });
     document.addEventListener('pointerdown', outside);
     document.addEventListener('keydown', escape);
-    window.addEventListener('resize', place);
-    document.addEventListener('scroll', place, true);
+    window.addEventListener('resize', dismiss);
+    document.addEventListener('scroll', dismiss, true);
     return () => {
       mounted.current = false;
       document.removeEventListener('pointerdown', outside);
       document.removeEventListener('keydown', escape);
-      window.removeEventListener('resize', place);
-      document.removeEventListener('scroll', place, true);
+      window.removeEventListener('resize', dismiss);
+      document.removeEventListener('scroll', dismiss, true);
       if (selection.anchor.isConnected) selection.anchor.focus({ preventScroll: true });
     };
   }, []);
@@ -1186,10 +1209,7 @@ function RegeneratePopover({ selection, models, onConfirm, onClose }) {
   };
   return ReactDOM.createPortal(<section ref={element} className="regenerate-popover" role="dialog" aria-label="Regenerate answer" style={{ ...position, visibility: position ? 'visible' : 'hidden' }}>
     <h3 className="font-mono text-[12px] mb-3">Regenerate answer</h3>
-    <div role="radiogroup" aria-label="Reply model" className="regenerate-models">
-      {!models.some((m) => m.id === model) && <p className="text-xs text-muted p-2">{model} · unavailable</p>}
-      {models.map((m) => <button key={m.id} type="button" role="radio" aria-checked={model === m.id} disabled={saving || uncertain} className={'regenerate-model ' + (model === m.id ? 'selected' : '')} onClick={() => setModel(m.id)}><span>{m.label}</span><span style={{ visibility: model === m.id ? 'visible' : 'hidden' }}><MessageIcon name="check" /></span></button>)}
-    </div>
+    <ModelSelect models={models} value={model} onChange={setModel} disabled={saving || uncertain} label="Reply model" />
     <p className="font-mono text-[10px] text-muted mt-3">This answer and all later messages will be removed.</p>
     {error && <p role="alert" className="text-xs text-bad mt-3">{error}</p>}
     <div className="flex items-center justify-between gap-3 mt-4"><button type="button" className="message-action" aria-label="Cancel regeneration" title="Cancel" disabled={saving} onClick={onClose}><MessageIcon name="close" /></button><button type="button" className="deck-button primary gap-2" disabled={saving || !models.some((m) => m.id === model)} onClick={confirm}><MessageIcon name="regenerate" />{saving ? 'Regenerating…' : uncertain ? 'Try again' : 'Regenerate'}</button></div>
@@ -1198,7 +1218,6 @@ function RegeneratePopover({ selection, models, onConfirm, onClose }) {
 
 function AskView({ models, model, setModel, rate, imageLimits, settings, onUnauth, conversationId, onConversationChange, viewKey, viewState, onViewState, active, onDeleted, onBranch, onClose }) {
   const limits = imageLimits || DEFAULT_IMAGE_LIMITS;
-  const groups = useMemo(() => groupByProvider(models), [models]);
   const currentModel = models.find((m) => m.id === model) || null;
   const [prompt, setPrompt] = useState(viewState.prompt);
   const [images, setImages] = useState(viewState.images);
@@ -1553,19 +1572,7 @@ function AskView({ models, model, setModel, rate, imageLimits, settings, onUnaut
         {images.length > 0 && <div className="flex flex-wrap gap-2.5 px-4 pt-3 pb-1">{images.map((im, index) => <ImageThumb key={im.id} image={im} images={images} index={index} onRemove={removeImage} />)}</div>}
 
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 border-t border-edge font-mono text-[11px] text-muted">
-          <select
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            className="bg-panel2 border border-edge rounded text-[11px] font-mono px-2 py-1.5 outline-none hover:border-accent/50 transition cursor-pointer text-[#e8e2d6]"
-          >
-            {groups.map((g) => (
-              <optgroup key={g.label} label={g.label}>
-                {g.items.map((m) => (
-                  <option key={m.id} value={m.id}>{m.label}</option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
+          <ModelSelect models={models} value={model} onChange={setModel} />
 
 
           <AttachmentPicker images={images} limits={limits} disabled={currentModel?.supports_images === false} onClick={() => fileInputRef.current?.click()} />

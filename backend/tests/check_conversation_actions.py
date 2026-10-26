@@ -145,6 +145,10 @@ def check_actions():
             draft.fill('Keep this draft')
             active.get_by_role('button', name='Edit', exact=True).first.click()
             expect(active.get_by_role('textbox', name='Edit message')).to_have_value('Question A')
+            assert active.get_by_role('textbox', name='Edit message').evaluate('(element) => element.selectionStart === element.value.length && element.selectionEnd === element.value.length')
+            style = '(element) => { const s = getComputedStyle(element); return [s.appearance, s.fontFamily, s.fontSize, s.padding, s.borderRadius, s.backgroundColor]; }'
+            assert active.get_by_role('combobox', name='Edit model').evaluate(style) == active.get_by_role('combobox', name='Model', exact=True).evaluate(style)
+
             expect(active.get_by_text('Answer D', exact=True)).to_be_visible()
             expect(active.get_by_role('button', name='send', exact=True)).to_be_disabled()
             active.get_by_role('button', name='Save', exact=True).click()
@@ -162,9 +166,11 @@ def check_actions():
             dialog = page.get_by_role('dialog', name='Regenerate answer')
             dialog.evaluate('(element) => { element.dataset.identity = "original"; }')
             before = dialog.bounding_box()
-            dialog.get_by_role('radio', name='Claude', exact=True).click()
+            dialog.get_by_role('combobox', name='Reply model').select_option('claude')
             expect(dialog).to_have_attribute('data-identity', 'original')
             after = dialog.bounding_box()
+            assert dialog.get_by_role('combobox', name='Reply model').evaluate(style) == active.get_by_role('combobox', name='Model', exact=True).evaluate(style)
+
             assert abs(after['height'] - before['height']) < 1
             assert dialog.evaluate('(element) => element.getAnimations().length') == 0
             assert not regenerations
@@ -173,7 +179,12 @@ def check_actions():
             expect(dialog).to_have_count(0)
             expect(active.get_by_text('Answer D', exact=True)).to_be_visible()
             active.get_by_role('button', name='Regenerate', exact=True).first.click()
-            dialog.get_by_role('radio', name='Claude', exact=True).click()
+            expect(dialog).to_be_visible()
+            page.evaluate('window.scrollTo(0, window.scrollY > 50 ? 0 : 200)')
+            expect(dialog).to_have_count(0)
+            assert not regenerations
+            active.get_by_role('button', name='Regenerate', exact=True).first.click()
+            dialog.get_by_role('combobox', name='Reply model').select_option('claude')
             dialog.get_by_role('button', name='Regenerate', exact=True).click()
             expect(active.get_by_text('Regenerated answer', exact=True)).to_be_visible()
             expect(active.get_by_text('Question C', exact=True)).to_have_count(0)
@@ -183,8 +194,26 @@ def check_actions():
             # Attachments and reply model are edited locally until Save.
             active.get_by_role('button', name='Edit', exact=True).first.click()
             editor = active.locator('.message-editor')
-            editor.locator('input[type=file]').set_input_files({'name': 'photo.png', 'mimeType': 'image/png', 'buffer': PNG})
+            picker = editor.get_by_role('button', name='Attach images to message')
+            picker.hover()
+            expect(picker.locator('.attachment-details')).to_be_visible()
+            with page.expect_file_chooser() as chooser:
+                picker.click()
+            expect(picker.locator('.attachment-details')).to_be_hidden()
+            chooser.value.set_files({'name': 'photo.png', 'mimeType': 'image/png', 'buffer': PNG})
             expect(editor.get_by_role('button', name='Remove image 1')).to_be_visible()
+            expect(picker.locator('.attachment-details')).to_be_hidden()
+            page.mouse.move(0, 0)
+            picker.hover()
+            expect(picker.locator('.attachment-details')).to_be_visible()
+            editor.get_by_role('textbox', name='Edit message').evaluate('''(element, data) => {
+                const clipboard = new DataTransfer();
+                clipboard.items.add(new File([Uint8Array.from(atob(data), c => c.charCodeAt(0))], 'pasted.png', {type: 'image/png'}));
+                element.dispatchEvent(new ClipboardEvent('paste', {clipboardData: clipboard, bubbles: true}));
+            }''', base64.b64encode(PNG).decode())
+            expect(editor.get_by_role('button', name='Remove image 2')).to_be_visible()
+            expect(picker.locator('.attachment-details')).to_be_hidden()
+            editor.get_by_role('button', name='Remove image 2').click()
             editor.get_by_role('textbox', name='Edit message').fill('')
             editor.get_by_role('combobox', name='Edit model').select_option('gemini')
             abort_once['edit'] = True
@@ -214,7 +243,7 @@ def check_actions():
             box = dialog.bounding_box()
             assert box['x'] >= 0 and box['x'] + box['width'] <= 390.5, box
             assert box['y'] >= 0 and box['y'] + box['height'] <= 844.5, box
-            dialog.get_by_role('radio', name='Claude', exact=True).click()
+            dialog.get_by_role('combobox', name='Reply model').select_option('claude')
             page.screenshot(path='/private/tmp/brief-actions-mobile.png', full_page=False)
             page.keyboard.press('Escape')
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Mobile overflow'
