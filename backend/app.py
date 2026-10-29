@@ -9,7 +9,6 @@ import secrets
 import sys
 import threading
 import time
-import traceback
 from datetime import timedelta
 from functools import wraps
 
@@ -23,6 +22,7 @@ from google.genai import types as genai_types
 from openai import OpenAI
 import local_inference
 import dictation
+import provider_requests
 
 TOTP_SECRET = os.environ.get("TOTP_SECRET", "")
 if not re.fullmatch(r"[A-Z2-7]+=*", TOTP_SECRET):
@@ -41,13 +41,15 @@ if not SECRET_KEY:
 DATABASE_URL = os.environ["DATABASE_URL"]
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "true").lower() == "true"
 
-anthropic_client = Anthropic() if os.environ.get("ANTHROPIC_API_KEY") else None
+anthropic_client = Anthropic(timeout=120, max_retries=0) if os.environ.get("ANTHROPIC_API_KEY") else None
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+gemini_client = genai.Client(api_key=GEMINI_API_KEY, http_options=genai_types.HttpOptions(
+    timeout=120000, retry_options=genai_types.HttpRetryOptions(attempts=1),
+)) if GEMINI_API_KEY else None
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+openai_client = OpenAI(api_key=OPENAI_API_KEY, timeout=120, max_retries=0) if OPENAI_API_KEY else None
 
 SYSTEM_PROMPT = (
     "You are Brief AI. Answer the user clearly and directly. "
@@ -560,9 +562,10 @@ def require_auth(view):
     return wrapper
 
 
+@provider_requests.bounded
 def call_anthropic(model, prompt, depth, images=None, messages=None, output_limit=None, system_prompt=None, chart_tools=False):
     if anthropic_client is None:
-        raise RuntimeError("ANTHROPIC_API_KEY is not configured")
+        raise provider_requests.ProviderError('provider_not_configured', 'Anthropic is not configured on this server.')
     cfg = MODELS[model]
     content = []
     for img in images or []:
@@ -583,7 +586,8 @@ def call_anthropic(model, prompt, depth, images=None, messages=None, output_limi
         if reasoning.get("thinking"):
             kwargs["thinking"] = {"type": "adaptive"}
 
-    def send(arguments):
+    def send_once(arguments, seconds):
+        arguments = {**arguments, 'timeout': seconds}
         if model == "claude-fable-5":
             try:
                 return anthropic_client.beta.messages.create(
@@ -592,6 +596,9 @@ def call_anthropic(model, prompt, depth, images=None, messages=None, output_limi
             except TypeError:
                 return anthropic_client.messages.create(**arguments)
         return anthropic_client.messages.create(**arguments)
+
+    def send(arguments):
+        return provider_requests.request(lambda seconds: send_once(arguments, seconds))
 
     if chart_tools:
         from chart_generation import anthropic_generate
@@ -617,9 +624,10 @@ def call_anthropic(model, prompt, depth, images=None, messages=None, output_limi
 
 
 
+@provider_requests.bounded
 def call_gemini(model, prompt, depth, images=None, messages=None, output_limit=None, system_prompt=None, chart_tools=False):
     if gemini_client is None:
-        raise RuntimeError("GEMINI_API_KEY is not configured")
+        raise provider_requests.ProviderError('provider_not_configured', 'Google Gemini is not configured on this server.')
 
     config_args = dict(system_instruction=system_prompt if system_prompt is not None else SYSTEM_PROMPT, max_output_tokens=output_limit or MAX_TOKENS)
     reasoning = MODELS[model].get("reasoning", {}).get(depth)
@@ -641,11 +649,13 @@ def call_gemini(model, prompt, depth, images=None, messages=None, output_limit=N
                                messages if messages is not None else contents, config_args,
                                {**MODELS, '__default__': MODELS[model]})
 
-    resp = gemini_client.models.generate_content(
+    resp = provider_requests.request(lambda seconds: gemini_client.models.generate_content(
         model=model,
         contents=messages if messages is not None else contents,
-        config=genai_types.GenerateContentConfig(**config_args),
-    )
+        config=genai_types.GenerateContentConfig(**config_args, http_options=genai_types.HttpOptions(
+            timeout=max(1, int(seconds * 1000)), retry_options=genai_types.HttpRetryOptions(attempts=1),
+        )),
+    ))
 
     try:
         answer = (resp.text or "").strip()
@@ -674,9 +684,10 @@ def call_gemini(model, prompt, depth, images=None, messages=None, output_limit=N
     }
 
 
+@provider_requests.bounded
 def call_openai(model, prompt, depth, images=None, messages=None, output_limit=None, system_prompt=None, chart_tools=False):
     if openai_client is None:
-        raise RuntimeError("OPENAI_API_KEY is not configured")
+        raise provider_requests.ProviderError('provider_not_configured', 'OpenAI is not configured on this server.')
 
     user_content = [
         {"type": "image_url", "image_url": {"url": f"data:{img['media_type']};base64,{img['data']}"}}
@@ -703,7 +714,7 @@ def call_openai(model, prompt, depth, images=None, messages=None, output_limit=N
     if reasoning:
         kwargs["reasoning_effort"] = reasoning["effort"]
 
-    resp = openai_client.chat.completions.create(**kwargs)
+    resp = provider_requests.request(lambda seconds: openai_client.chat.completions.create(**kwargs, timeout=seconds))
     choice = resp.choices[0]
     answer = (choice.message.content or "").strip() or "_No response._"
 
@@ -862,9 +873,10 @@ def generate():
             result = call_anthropic(model, composed, depth, images)
     except local_inference.LocalError as exc:
         return jsonify(error=exc.code, detail=exc.detail), exc.status
-    except Exception as exc:  # surface API/network errors to the client
-        traceback.print_exc()
-        return jsonify(error="api_error", detail=str(exc)), 502
+    except Exception as exc:
+        error = provider_requests.describe_error(exc)
+        app.logger.warning('Generation failed: model=%s code=%s exception=%s', model, error.code, type(exc).__name__)
+        return jsonify(error=error.code, detail=error.detail), error.status
     duration_ms = int((time.perf_counter() - start) * 1000)
 
     served = result["served"]

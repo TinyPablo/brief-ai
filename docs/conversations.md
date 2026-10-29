@@ -24,6 +24,25 @@ becomes `failed` when another worker observes that its lock has disappeared.
 Retries require an explicit API call because the original provider request may
 already have incurred a charge. Queued jobs survive worker restarts.
 
+Cloud generation has a shared 120-second budget, including chart tool rounds and
+application retries. SDK retries are disabled. Explicit temporary provider errors
+can be retried once within the remaining budget. Network timeouts and permanent
+errors are not retried automatically. Each new request receives the remaining
+time as its SDK timeout; title generation uses the same bounded provider helpers.
+Local AI retains its separate four-minute limit.
+
+An independent worker monitor checks cloud jobs every second and marks overdue
+running jobs as failed. This remains active when all generation threads are
+blocked. A timeout does not guarantee that the provider has cancelled remote
+processing or billing. Late results cannot replace a failure or complete a newer
+retry attempt. A queued retry waits for the previous attempt's session lock,
+without preventing unrelated conversations from being processed.
+
+Failures expose safe categories and messages for provider overload, rate limits,
+exhausted quota, rejected access, incompatible requests, connection failures and
+timeouts. The existing Try again control preserves the user message. Provider
+payloads and raw error messages are not returned to the browser.
+
 Deleting a user message also deletes subsequent messages and their jobs. A
 conversation revision and row lock prevent an in-flight result from restoring
 deleted content. Deleting the first user message deletes the conversation.
