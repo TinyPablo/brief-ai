@@ -3,6 +3,7 @@
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 from pathlib import Path
 import threading
 from uuid import uuid4
@@ -53,7 +54,8 @@ def check_navigation():
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(executable_path='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless=True)
+            browser_name = os.environ.get('BRIEF_TEST_BROWSER', 'chromium')
+            browser = p.webkit.launch(headless=True) if browser_name == 'webkit' else p.chromium.launch(executable_path='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless=True)
             context = browser.new_context(viewport={'width': 1440, 'height': 1000}, has_touch=True, reduced_motion='no-preference')
             context.add_init_script('''window.motion = []; const original = Element.prototype.animate;
               Element.prototype.animate = function(frames, options) { window.motion.push({frames,options}); const a=original.call(this,frames,options); if(window.pauseTransitions){a.pause();a.currentTime=180;}return a; };''')
@@ -131,10 +133,15 @@ def check_navigation():
             # Swipe in the message area; vertical swipes must keep the active chat.
             page.evaluate('''() => {
               const el=document.querySelector('[data-conversation-view]:not([hidden])');
-              const point=(x,y)=>new Touch({identifier:1,target:el,clientX:x,clientY:y});
-              el.dispatchEvent(new TouchEvent('touchstart',{touches:[point(250,300)],bubbles:true}));
-              el.dispatchEvent(new TouchEvent('touchmove',{touches:[point(100,305)],bubbles:true,cancelable:true}));
-              el.dispatchEvent(new TouchEvent('touchend',{touches:[],changedTouches:[point(100,305)],bubbles:true}));
+              const point=(x,y)=>({identifier:1,target:el,clientX:x,clientY:y});
+              const send=(type,touches,changedTouches=touches)=>{
+                const event=new Event(type,{bubbles:true,cancelable:true});
+                Object.defineProperties(event,{touches:{value:touches},changedTouches:{value:changedTouches}});
+                el.dispatchEvent(event);
+              };
+              send('touchstart',[point(250,300)]);
+              send('touchmove',[point(100,305)]);
+              send('touchend',[],[point(100,305)]);
             }''')
             expect(active.locator('textarea')).to_have_value('Beta')
             page.get_by_role('button', name='Close conversation', exact=True).click()
@@ -148,6 +155,21 @@ def check_navigation():
             expect(active.locator('textarea')).to_have_value('Gamma')
             assert not page.evaluate('window.motion'), 'Reduced motion still animates'
             page.set_viewport_size({'width': 390, 'height': 844})
+            page.get_by_role('button', name='Previous conversation: Beta').click()
+            long_title = 'Działanie fotowoltaiki a napięcie sieci i dodatkowe szczegóły rozmowy'
+            active.locator('textarea').fill(long_title)
+            page.get_by_role('button', name='Previous conversation: Weekend w Krakowie').click()
+            navigation = page.get_by_role('navigation', name='Open conversations')
+            assert navigation.evaluate('element => getComputedStyle(element).position') == 'static'
+            title = navigation.locator('.conversation-neighbor > span:not([aria-hidden])')
+            assert title.evaluate('element => element.scrollWidth > element.clientWidth'), 'Long mobile title is not truncated'
+            assert title.evaluate('element => getComputedStyle(element).textOverflow') == 'ellipsis'
+            page.evaluate('window.scrollTo(0, 900)')
+            page.wait_for_function('scrollY > 500')
+            assert navigation.bounding_box()['y'] + navigation.bounding_box()['height'] < 0, 'Navigation still covers messages after scrolling'
+            page.screenshot(path='/private/tmp/brief-navigation-mobile-scrolled.png')
+            navigation.get_by_role('button', name='Next conversation: ' + long_title[:55]).click()
+            page.get_by_role('button', name='Next conversation: Gamma').click()
             page.screenshot(path='/private/tmp/brief-navigation-mobile.png', full_page=True)
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Mobile horizontal overflow'
             page.emulate_media(reduced_motion='no-preference')

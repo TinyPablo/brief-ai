@@ -195,6 +195,11 @@ are not placed in `sessionStorage`. Refresh restores the views and drafts, then
 revalidates saved conversations against the server. A pending submission ID lets
 the view recover a request whose HTTP acknowledgement was interrupted.
 
+New attachment records store image and thumbnail bytes as ArrayBuffers to avoid
+WebKit Blob persistence errors. Older Blob records remain readable. Binary
+conversion completes before the IndexedDB write transaction opens, and the
+attachment cache advances only after a successful transaction.
+
 Each view retains its own selected model and scroll position. A new reply follows
 the bottom only when that view was already at the bottom. Reading earlier
 messages keeps its position and exposes a New reply action. Background views get
@@ -304,6 +309,11 @@ only the open view and asks before discarding a draft. A completely empty view
 is removed automatically when another view or another application section is
 selected; a view with text, attachments or a pending submission is kept.
 Clicking New while already in an empty view gives a short scale acknowledgement.
+
+On narrow screens, neighboring conversation links remain in the page flow and
+scroll out of view with the messages. Long titles use an ellipsis. They do not
+stick below the application header or cover conversation content. Desktop side
+navigation and horizontal switching gestures are unchanged.
 
 Transitions clip both panes at the chat boundaries, with synchronized slide and
 fade animations. The outgoing clipping window remains stationary, preventing the
