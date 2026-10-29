@@ -221,6 +221,12 @@
     .conversation-navigation { min-height: 0; margin-bottom: 0; }
     .conversation-navigation > div:first-child, .conversation-navigation > div:last-child { top: 16px; }
     .conversation-navigation:not(:has(button)) { display: none; }
+    @media (max-width: 1149px) {
+      .conversation-navigation { position: static; top: auto; margin-bottom: 12px; }
+      .conversation-navigation > div { min-width: 0; }
+      .conversation-neighbor > span:not([aria-hidden]) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .conversation-neighbor > span[aria-hidden] { flex-shrink: 0; }
+    }
     .header-new-conversation { margin-left: auto; }
     .header-new-conversation, .header-close-conversation { width: 44px; height: 44px; display: inline-flex; align-items: center; justify-content: center; color: #9c9286; font-family: 'Space Mono', monospace; font-size: 24px; }
     .header-close-conversation { font-size: 22px; }

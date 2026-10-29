@@ -3,6 +3,7 @@
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import os
 import threading
 
 from playwright.sync_api import sync_playwright
@@ -20,7 +21,8 @@ def check_storage():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(executable_path='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless=True)
+            browser_name = os.environ.get('BRIEF_TEST_BROWSER', 'chromium')
+            browser = p.webkit.launch(headless=True) if browser_name == 'webkit' else p.chromium.launch(executable_path='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless=True)
             context = browser.new_context()
             page = context.new_page()
             url = f'http://127.0.0.1:{server.server_port}/conversation-sessions.js'
@@ -34,18 +36,35 @@ def check_storage():
               const view = initial.views[0];
               view.prompt = 'Unsent text'; view.model = 'test-model'; view.scroll = 120; view.atBottom = false;
               view.images = [{id:'image-1', name:'photo.png', mediaType:'image/png', sizeBytes:5,
-                width:1, height:1, base64:btoa('image'), thumb:null}];
+                width:1, height:1, base64:btoa('image'), thumb:{base64:btoa('thumb'),mediaType:'image/webp'}}];
               view.conversation = {messages:[{role:'user',content:'saved'}]};
               storage.setOrder([view], view.key);
               await storage.save(view);
+              if (failures.length) throw new Error('Storage failed: '+failures.join(', '));
+              const db=await storage.db;
+              const saved=await new Promise((resolve,reject)=>{const r=db.transaction('attachments').objectStore('attachments').get([storage.meta.id,view.key,'image-1']);r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});
+              if (!(saved.blob instanceof ArrayBuffer) || !(saved.thumb instanceof ArrayBuffer)) throw new Error('Attachments must store binary buffers');
               return { key:view.key, session:storage.meta.id };
             }''')
+            if browser_name != 'webkit':
+                # Existing installations may still have records in the old Blob format.
+                page.evaluate('''async () => {
+                  const db=await storage.db;
+                  const tx=db.transaction('attachments','readwrite');
+                  const done=new Promise((resolve,reject)=>{tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error);});
+                  const store=tx.objectStore('attachments');
+                  const key=[storage.meta.id,storage.meta.active,'image-1'];
+                  const request=store.get(key);
+                  request.onsuccess=()=>{const image=request.result;image.blob=new Blob([image.blob],{type:image.mediaType});image.thumb=new Blob([image.thumb],{type:image.thumbMediaType});store.put(image,key);};
+                  await done;
+                }''')
             page.reload()
             page.add_script_tag(url=url)
             restored = page.evaluate('''async () => {
               window.storage = new BriefSessions.WorkspaceStorage(() => {});
               window.restored = await storage.restore();
               const view = restored.views[0];
+              if (atob(view.images[0].thumb.base64) !== 'thumb' || view.images[0].thumb.mediaType !== 'image/webp') throw new Error('Thumbnail not restored');
               return {prompt:view.prompt, model:view.model, scroll:view.scroll, atBottom:view.atBottom,
                 image:atob(view.images[0].base64), name:view.images[0].name,
                 cached:view.conversation.messages[0].content, session:storage.meta.id};
