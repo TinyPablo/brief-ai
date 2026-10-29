@@ -17,19 +17,23 @@
     const bytes = Uint8Array.from(atob(encoded), (c) => c.charCodeAt(0));
     return new Blob([bytes], { type });
   }
-  function attachment(image) {
+  async function attachment(image) {
     return {
       id: image.id, name: image.name, mediaType: image.mediaType, sizeBytes: image.sizeBytes,
       width: image.width, height: image.height,
-      blob: image.blob || blobFromBase64(image.base64, image.mediaType),
-      thumb: image.thumb ? blobFromBase64(image.thumb.base64, image.thumb.mediaType) : null,
+      // Store bytes rather than Blobs: WebKit can fail to persist Blob backing files.
+      blob: await (image.blob || blobFromBase64(image.base64, image.mediaType)).arrayBuffer(),
+      thumb: image.thumb ? await blobFromBase64(image.thumb.base64, image.thumb.mediaType).arrayBuffer() : null,
+      thumbMediaType: image.thumb?.mediaType || null,
     };
   }
   async function restoreImage(image) {
-    const previewUrl = await dataUrl(image.blob);
-    const thumbUrl = image.thumb ? await dataUrl(image.thumb) : null;
-    return { ...image, previewUrl, base64: previewUrl.split(',')[1],
-      thumb: thumbUrl ? { base64: thumbUrl.split(',')[1], mediaType: image.thumb.type } : null };
+    const blob = image.blob instanceof Blob ? image.blob : new Blob([image.blob], { type: image.mediaType });
+    const thumb = image.thumb instanceof Blob ? image.thumb : image.thumb ? new Blob([image.thumb], { type: image.thumbMediaType || 'image/webp' }) : null;
+    const previewUrl = await dataUrl(blob);
+    const thumbUrl = thumb ? await dataUrl(thumb) : null;
+    return { ...image, blob, previewUrl, base64: previewUrl.split(',')[1],
+      thumb: thumbUrl ? { base64: thumbUrl.split(',')[1], mediaType: thumb.type } : null };
   }
   function openDatabase() {
     return new Promise((resolve, reject) => {
@@ -134,26 +138,26 @@
     }
     save(view) {
       if (this.removed.has(view.key)) return this.queue;
-      const previous = this.previous.get(view.key);
-      this.previous.set(view.key, view);
       const sessionId = this.meta.id;
       this.queue = this.queue.catch(() => {}).then(async () => {
+        const previous = this.previous.get(view.key);
+        const { images, conversation, ...draft } = view;
+        const oldIds = new Set(previous?.images?.map((im) => im.id));
+        // Finish asynchronous binary conversion before opening the transaction.
+        const added = await Promise.all(images.filter((image) => !oldIds.has(image.id)).map(attachment));
         const db = await this.db;
         const tx = db.transaction(['views', 'attachments', 'snapshots', 'sessions'], 'readwrite');
         const done = finished(tx);
-        const { images, conversation, ...draft } = view;
         tx.objectStore('views').put({ ...draft, imageIds: images.map((im) => im.id) }, [sessionId, view.key]);
-        const oldIds = new Set(previous?.images?.map((im) => im.id));
         const newIds = new Set(images.map((im) => im.id));
-        for (const image of images) {
-          if (!oldIds.has(image.id)) tx.objectStore('attachments').put(attachment(image), [sessionId, view.key, image.id]);
-        }
+        for (const image of added) tx.objectStore('attachments').put(image, [sessionId, view.key, image.id]);
         for (const id of oldIds) if (!newIds.has(id)) tx.objectStore('attachments').delete([sessionId, view.key, id]);
         if (!previous || previous.conversation !== conversation) {
           tx.objectStore('snapshots').put(conversation, [sessionId, view.key]);
         }
         tx.objectStore('sessions').put({ touched: Date.now() }, sessionId);
         await done;
+        if (!this.removed.has(view.key)) this.previous.set(view.key, view);
       });
       this.queue.catch(() => { this.previous.delete(view.key); this.onError(); });
       return this.queue;
