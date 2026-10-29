@@ -4,6 +4,7 @@ import json
 import re
 
 from charts import MAX_CHARTS, validate_chart
+import provider_requests
 
 CHART_INSTRUCTIONS = """
 You have an internal create_chart tool. Use it autonomously when a chart materially
@@ -126,6 +127,7 @@ def anthropic_generate(send, kwargs, rates):
     return session.result(served, response.stop_reason)
 
 
+@provider_requests.bounded
 def google_generate(client, types, model, messages, config, rates):
     session = ChartSession(rates)
     messages = list(messages)
@@ -139,8 +141,10 @@ def google_generate(client, types, model, messages, config, rates):
         config['max_output_tokens'] = max(1, limit-session.output_tokens)
         config['tool_config'] = types.ToolConfig(function_calling_config=types.FunctionCallingConfig(
             mode='NONE' if step == 2 or len(session.charts) >= MAX_CHARTS else 'AUTO'))
-        response = client.models.generate_content(model=model, contents=messages,
-                                                  config=types.GenerateContentConfig(**config))
+        response = provider_requests.request(lambda seconds: client.models.generate_content(
+            model=model, contents=messages, config=types.GenerateContentConfig(**config, http_options=types.HttpOptions(
+                timeout=max(1, int(seconds * 1000)), retry_options=types.HttpRetryOptions(attempts=1),
+            ))))
         usage = response.usage_metadata
         session.account(model, getattr(usage, 'prompt_token_count', 0) or 0,
                         (getattr(usage, 'candidates_token_count', 0) or 0)+(getattr(usage, 'thoughts_token_count', 0) or 0))
@@ -162,6 +166,7 @@ def google_generate(client, types, model, messages, config, rates):
     return session.result(model, stop)
 
 
+@provider_requests.bounded
 def openai_generate(client, model, messages, system, limit, reasoning, rates):
     session = ChartSession(rates)
     inputs = []
@@ -185,7 +190,7 @@ def openai_generate(client, model, messages, system, limit, reasoning, rates):
     for step in range(3):
         kwargs['max_output_tokens'] = max(1, limit-session.output_tokens)
         kwargs['tool_choice'] = 'none' if step == 2 or len(session.charts) >= MAX_CHARTS else 'auto'
-        response = client.responses.create(**kwargs)
+        response = provider_requests.request(lambda seconds: client.responses.create(**kwargs, timeout=seconds))
         served = response.model
         session.account(served, response.usage.input_tokens, response.usage.output_tokens)
         session.text.append(response.output_text)
