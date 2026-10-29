@@ -3,6 +3,7 @@
 import logging
 import os
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
@@ -12,6 +13,7 @@ from charts import validate_charts
 
 from conversation_content import provider_messages
 from conversations import database
+from provider_requests import GENERATION_SECONDS, describe_error
 
 log = logging.getLogger(__name__)
 LOCK_NAMESPACE = 477
@@ -83,6 +85,28 @@ def recover_interrupted(api):
                 )
 
 
+def expire_slow_jobs(api):
+    models = [model for model, config in api.MODELS.items() if config['provider'] != 'local']
+    error = describe_error(TimeoutError())
+    with database(api) as cur:
+        cur.execute(
+            """UPDATE conversation_jobs SET status = 'failed', finished_at = now(),
+               error_code = %s, error_detail = %s
+               WHERE status = 'running' AND model = ANY(%s)
+               AND started_at <= now() - (%s * interval '1 second')""",
+            (error.code, error.detail, models, GENERATION_SECONDS),
+        )
+
+
+def monitor_deadlines(api):
+    while True:
+        try:
+            expire_slow_jobs(api)
+        except Exception:
+            log.exception('Generation deadline monitor failed')
+        time.sleep(1)
+
+
 def finish(api, job, result=None, duration_ms=0, error=None):
     charts = validate_charts(result.get('charts', [])) if result is not None else []
     with database(api) as cur:
@@ -91,9 +115,9 @@ def finish(api, job, result=None, duration_ms=0, error=None):
         conversation = cur.fetchone()
         if not conversation or conversation['revision'] != job['revision']:
             return
-        cur.execute('SELECT status FROM conversation_jobs WHERE id = %s FOR UPDATE', (str(job['id']),))
+        cur.execute('SELECT status, started_at FROM conversation_jobs WHERE id = %s FOR UPDATE', (str(job['id']),))
         state = cur.fetchone()
-        if not state or state['status'] != 'running':
+        if not state or state['status'] != 'running' or state['started_at'] != job['started_at']:
             return
         if error:
             cur.execute("""UPDATE conversation_jobs SET status = 'failed', finished_at = now(),
@@ -130,12 +154,22 @@ def run_one(api):
     conn = api.get_db()
     try:
         with conn, conn.cursor(cursor_factory=api.psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT * FROM conversation_jobs WHERE status = 'queued' ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED")
-            job = cur.fetchone()
-            if not job:
-                return False
-            cur.execute('SELECT pg_advisory_lock(%s, hashtext(%s))', (LOCK_NAMESPACE, str(job['id'])))
-            cur.execute("UPDATE conversation_jobs SET status = 'running', started_at = now() WHERE id = %s", (str(job['id']),))
+            skipped = []
+            while True:
+                cur.execute("""SELECT * FROM conversation_jobs WHERE status = 'queued'
+                            AND NOT (id = ANY(%s::uuid[]))
+                            ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED""", (skipped,))
+                job = cur.fetchone()
+                if not job:
+                    return False
+                # Expired attempts can still own a session lock. Do not block their
+                # completion transaction or starve unrelated queued conversations.
+                cur.execute('SELECT pg_try_advisory_lock(%s, hashtext(%s)) AS acquired', (LOCK_NAMESPACE, str(job['id'])))
+                if cur.fetchone()['acquired']:
+                    break
+                skipped.append(str(job['id']))
+            cur.execute("UPDATE conversation_jobs SET status = 'running', started_at = now() WHERE id = %s RETURNING started_at", (str(job['id']),))
+            job['started_at'] = cur.fetchone()['started_at']
         started = time.perf_counter()
         try:
             with database(api) as cur:
@@ -145,10 +179,10 @@ def run_one(api):
                 result = generate(api, job, turns)
                 finish(api, job, result, int((time.perf_counter() - started) * 1000))
         except Exception as exc:
-            log.exception('Conversation job failed: %s', job['id'])
-            code = exc.code if isinstance(exc, api.local_inference.LocalError) else 'api_error'
-            detail = exc.detail if isinstance(exc, api.local_inference.LocalError) else 'The model request failed. Retry the message to continue.'
-            finish(api, job, error=(code, detail))
+            error = exc if isinstance(exc, api.local_inference.LocalError) else describe_error(exc)
+            log.warning('Conversation job failed: job=%s model=%s code=%s exception=%s',
+                        job['id'], job['model'], error.code, type(exc).__name__)
+            finish(api, job, error=(error.code, error.detail))
         return True
     finally:
         conn.close()
@@ -171,6 +205,8 @@ if __name__ == '__main__':
     import app as api
 
     logging.basicConfig(level=logging.INFO)
+    # Keep the UI deadline enforceable even if all provider threads are blocked.
+    threading.Thread(target=monitor_deadlines, args=(api,), daemon=True).start()
     concurrency = max(1, min(8, int(os.environ.get('CONVERSATION_WORKERS', '4'))))
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
         futures = [executor.submit(work, api) for _ in range(concurrency)]
