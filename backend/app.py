@@ -804,6 +804,7 @@ def config():
         })
     return jsonify(
         models=models,
+        conversation_events=True,
         dictation={"enabled": dictation.enabled(), "provider": "soniox"},
         default=DEFAULT_MODEL,
         usd_pln=USD_TO_PLN,
@@ -1235,6 +1236,8 @@ def local_api():
 
 
 from conversations import register_routes
+from conversation_events import register_events
+register_events(app, sys.modules[__name__])
 dictation.register_routes(app, require_auth)
 from conversation_sharing import register_sharing
 from conversation_branches import register_branches

@@ -143,3 +143,35 @@ CONVERSATION_MIGRATIONS += (
     """ALTER TABLE conversation_messages ADD COLUMN IF NOT EXISTS charts JSONB
        NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(charts) = 'array')""",
 )
+
+CONVERSATION_MIGRATIONS += (
+    '''CREATE OR REPLACE FUNCTION notify_conversation_change() RETURNS trigger AS $$
+       DECLARE cid UUID;
+       BEGIN
+           IF TG_TABLE_NAME = 'conversations' THEN
+               cid := COALESCE(NEW.id, OLD.id);
+               IF TG_OP <> 'DELETE' AND NEW.title_status = 'queued' THEN
+                   PERFORM pg_notify('brief_conversation_work', '');
+               END IF;
+           ELSE
+               cid := COALESCE(NEW.conversation_id, OLD.conversation_id);
+               IF TG_TABLE_NAME = 'conversation_jobs' AND TG_OP <> 'DELETE' THEN
+                   IF NEW.status = 'queued' THEN
+                       PERFORM pg_notify('brief_conversation_work', '');
+                   END IF;
+               END IF;
+           END IF;
+           PERFORM pg_notify('brief_conversation_changes', cid::text);
+           RETURN NULL;
+       END;
+       $$ LANGUAGE plpgsql''',
+    'DROP TRIGGER IF EXISTS notify_conversation_change ON conversations',
+    '''CREATE TRIGGER notify_conversation_change AFTER INSERT OR UPDATE OR DELETE
+       ON conversations FOR EACH ROW EXECUTE FUNCTION notify_conversation_change()''',
+    'DROP TRIGGER IF EXISTS notify_conversation_change ON conversation_messages',
+    '''CREATE TRIGGER notify_conversation_change AFTER INSERT OR UPDATE OR DELETE
+       ON conversation_messages FOR EACH ROW EXECUTE FUNCTION notify_conversation_change()''',
+    'DROP TRIGGER IF EXISTS notify_conversation_change ON conversation_jobs',
+    '''CREATE TRIGGER notify_conversation_change AFTER INSERT OR UPDATE OR DELETE
+       ON conversation_jobs FOR EACH ROW EXECUTE FUNCTION notify_conversation_change()''',
+)
