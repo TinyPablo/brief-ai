@@ -14,6 +14,7 @@ from charts import validate_charts
 from conversation_content import provider_messages
 from conversations import database
 from provider_requests import GENERATION_SECONDS, describe_error
+from conversation_events import Listener, WORK_CHANNEL
 
 log = logging.getLogger(__name__)
 LOCK_NAMESPACE = 477
@@ -188,17 +189,27 @@ def run_one(api):
         conn.close()
 
 
-def work(api):
-    while True:
+def work(api, stop=None):
+    stop = stop or threading.Event()
+    listener = None
+    while not stop.is_set():
         try:
+            # LISTEN must commit before checking the queue to avoid a lost wakeup.
+            if listener is None:
+                listener = Listener(api, WORK_CHANNEL)
             recover_interrupted(api)
             from conversation_titles import recover_titles, run_title
             recover_titles(api)
             if not run_one(api) and not run_title(api):
-                time.sleep(1)
+                listener.wait(timeout=5)
         except Exception:
             log.exception('Conversation worker iteration failed')
+            if listener is not None:
+                listener.close()
+                listener = None
             time.sleep(2)
+    if listener is not None:
+        listener.close()
 
 
 if __name__ == '__main__':
