@@ -13,6 +13,31 @@ requests independently of the browser and web workers. Up to four conversations
 can generate concurrently by default; `CONVERSATION_WORKERS` accepts 1-8.
 Only one queued or running job per conversation is allowed.
 
+Postgres LISTEN/NOTIFY wakes idle workers immediately after a queued job commits.
+The listener is established before checking the queue to avoid missed wakeups.
+Workers retain a five-second reconciliation timeout and reconnect after database
+connection failures. Notifications do not replace the durable queue.
+
+The authenticated `/api/conversation-events` SSE endpoint publishes conversation
+IDs after committed changes, not message content. Each browser page opens one
+connection shared by its cached conversations. On an event the affected view
+fetches its authoritative snapshot immediately, including when it is hidden.
+Reconnect and page-resume events reconcile snapshots. While SSE is connected,
+pending views retain a 15-second reconciliation poll; without it they use the
+existing 1.2-second polling fallback. Stream connections rotate after 55 seconds
+and send keepalives at least every ten seconds.
+
+The backend uses two Gunicorn gthread workers with 16 threads each so event
+connections do not occupy the only two HTTP workers. nginx disables response
+buffering, caching and compression for the event endpoint. One database listener
+and one request thread are held per connected browser page; each conversation
+worker also keeps its own listener connection.
+
+Conversation snapshots include `timing.queue_ms` (job creation to pickup) and
+`timing.worker_ms` (pickup to completion). These measurements exclude browser
+delivery and rendering. Responses are still displayed as completed answers;
+this transport does not yet stream model text tokens.
+
 Refresh or closing the browser does not cancel a job. Polling the conversation
 returns its messages and latest job, including completion and failure state.
 Each message has its own server timestamp. Assistant messages retain the model
