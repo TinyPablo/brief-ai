@@ -178,6 +178,12 @@ def register_routes(app, api):
                         (str(cid),))
             job = cur.fetchone()
             result.update(messages=messages, job=json_row(job) if job else None)
+            if job:
+                started, finished = job['started_at'], job['finished_at']
+                result['timing'] = {
+                    'queue_ms': round((started - job['created_at']).total_seconds() * 1000, 1) if started else None,
+                    'worker_ms': round((finished - started).total_seconds() * 1000, 1) if started and finished else None,
+                }
             return jsonify(result)
 
     @app.post('/api/conversations/<uuid:cid>/messages')

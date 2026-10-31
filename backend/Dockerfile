@@ -10,4 +10,4 @@ COPY frontend/public/index.html ./share-shell.html
 
 EXPOSE 5000
 
-CMD ["gunicorn", "-b", "0.0.0.0:5000", "-w", "2", "--timeout", "300", "app:app"]
+CMD ["gunicorn", "-b", "0.0.0.0:5000", "-w", "2", "--worker-class", "gthread", "--threads", "16", "--timeout", "300", "app:app"]

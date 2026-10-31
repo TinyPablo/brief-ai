@@ -1379,9 +1379,16 @@ function AskView({ models, model, setModel, rate, imageLimits, dictationEnabled,
   useEffect(() => {
     let cancelled = false;
     let timer;
+    let inFlight = false;
+    let dirty = false;
     setRestoring(!!conversationId && !previousConversation.current);
     setError('');
+    const schedule = (delay) => { clearTimeout(timer); timer = setTimeout(poll, delay); };
     const poll = async () => {
+      if (cancelled || !conversationId) return;
+      if (inFlight) { dirty = true; return; }
+      clearTimeout(timer);
+      inFlight = true;
       try {
         const res = await api('/conversations/' + conversationId);
         if (cancelled) return;
@@ -1415,13 +1422,20 @@ function AskView({ models, model, setModel, rate, imageLimits, dictationEnabled,
         }
         setRestoring(false);
         setError('');
-        if (['queued', 'running'].includes(data.job?.status) || ['queued', 'running'].includes(data.title_status)) timer = setTimeout(poll, 1200);
+        if (['queued', 'running'].includes(data.job?.status) || ['queued', 'running'].includes(data.title_status)) schedule(window.BriefConversationEvents?.connected() ? 15000 : 1200);
       } catch (e) {
-        if (!cancelled) { setError('Connection lost. Reconnecting…'); timer = setTimeout(poll, 3000); }
+        if (!cancelled) { setError('Connection lost. Reconnecting…'); schedule(3000); }
+      } finally {
+        inFlight = false;
+        if (dirty && !cancelled) { dirty = false; schedule(0); }
       }
     };
+    const changed = (event) => {
+      if (!event.detail?.id || event.detail.id === conversationId) schedule(0);
+    };
+    window.addEventListener('briefai:conversation-update', changed);
     if (conversationId) poll();
-    return () => { cancelled = true; clearTimeout(timer); };
+    return () => { cancelled = true; clearTimeout(timer); window.removeEventListener('briefai:conversation-update', changed); };
   }, [conversationId, refresh, onDeleted, onViewState, viewKey]);
 
   useEffect(() => {
@@ -2230,6 +2244,7 @@ function Main({ onLogout }) {
   const [rate, setRate] = useState(1);
   const [imageLimits, setImageLimits] = useState(null);
   const [dictationEnabled, setDictationEnabled] = useState(false);
+  const [liveUpdates, setLiveUpdates] = useState(false);
   const [settings, setSettings] = useState(loadSettings);
 
   useEffect(() => {
@@ -2241,8 +2256,13 @@ function Main({ onLogout }) {
       setRate(d.usd_pln || 1);
       setImageLimits(d.image_limits || null);
       setDictationEnabled(!!d.dictation?.enabled);
+      setLiveUpdates(!!d.conversation_events);
     });
   }, []);
+
+  useEffect(() => {
+    if (liveUpdates) return window.BriefConversationEvents?.start();
+  }, [liveUpdates]);
 
   const currentModel = models.find((m) => m.id === model) || null;
 
